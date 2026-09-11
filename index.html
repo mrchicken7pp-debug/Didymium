@@ -50,8 +50,8 @@
             }
         });
 
-        // 全域計時器 (每秒自動檢查與更新 UI)
-        setInterval(() => {
+        // 核心計時器與狀態檢查邏輯
+        function checkTimersAndRender() {
             if (!roomData) return;
             const now = Date.now();
 
@@ -83,8 +83,21 @@
                 } else {
                     render();
                 }
+            } else {
+                render();
             }
-        }, 1000);
+        }
+
+        // 全域計時器 (每秒自動檢查)
+        setInterval(checkTimersAndRender, 1000);
+
+        // 💡 解決背景切回不更新問題：監聽網頁可見度變化
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === 'visible') {
+                // 當玩家從其他 App 切回遊戲時，強制立刻觸發檢查與重新渲染
+                checkTimersAndRender();
+            }
+        });
 
         const generateRoomCode = () => Math.random().toString(36).substring(2, 6).toUpperCase();
 
@@ -228,7 +241,6 @@
             const nextIndex = (roomData.currentSpeakerIndex || 0) + 1;
 
             if (nextIndex >= order.length) {
-                // 所有人都發言完畢，進入 1 分鐘自由討論
                 await updateDoc(doc(db, "rooms", roomId), {
                     phase: "day_free",
                     dayStartTime: Date.now(),
@@ -260,7 +272,6 @@
             const roomRef = doc(db, "rooms", roomId);
             await updateDoc(roomRef, { daySkips: newSkips });
 
-            // 超過 3/4 存活玩家同意，自動進入投票階段
             if (skipCount / totalAlive > 0.75) {
                 window.startVoting();
             }
@@ -319,7 +330,6 @@
                 ? "昨晚是個平安夜，沒有人死亡。" 
                 : `天亮了。昨晚死亡的玩家：${deaths.join('、 ')}。`;
 
-            // 檢查勝負
             const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
             const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
             const aliveGood = alivePlayers.length - aliveWolves;
@@ -331,7 +341,6 @@
             } else if (aliveWolves >= aliveGood) {
                 await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${msg}\n🐺 狼人陣營獲勝！` });
             } else {
-                // 隨機產生個人發言順序
                 const aliveIds = Object.keys(newPlayers).filter(id => newPlayers[id].isAlive);
                 const shuffledSpeechOrder = [...aliveIds].sort(() => 0.5 - Math.random());
                 const firstSpeakerName = newPlayers[shuffledSpeechOrder[0]]?.name || "玩家";
@@ -385,7 +394,6 @@
                 resultMsg = "無人投票，今日無人被放逐。";
             }
 
-            // 判斷勝負
             const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
             const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
             const aliveGood = alivePlayers.length - aliveWolves;
@@ -417,7 +425,6 @@
             const appDiv = document.getElementById('app');
             if (!user) return;
 
-            // 1. 尚未加入房間
             if (!roomId || !roomData) {
                 appDiv.innerHTML = `
                     <div class="flex flex-col items-center justify-center min-h-[80vh]">
@@ -441,7 +448,6 @@
                 return;
             }
 
-            // 2. 進入房間後的遊戲 UI
             const isHost = roomData.hostId === user.uid;
             const myData = roomData.players[user.uid] || {};
             const allPlayers = Object.entries(roomData.players);
@@ -450,7 +456,6 @@
 
             const now = Date.now();
 
-            // 階段名稱與倒數計時
             let phaseText = '';
             if(roomData.phase === 'lobby') phaseText = '等待中';
             
@@ -480,7 +485,6 @@
 
             if(roomData.phase === 'game_over') phaseText = '🏆 遊戲結束';
 
-            // 渲染玩家列表卡片
             const currentSpeakerId = roomData.phase === 'day_speech' ? roomData.speechOrder?.[roomData.currentSpeakerIndex] : null;
 
             let playersHTML = allPlayers.map(([id, player]) => {
@@ -492,7 +496,6 @@
                 let icon = player.isAlive ? (isSpeaking ? '🎤' : '👤') : '💀';
                 let you = id === user.uid ? ' (你)' : '';
 
-                // 計算得票數
                 let voteCount = 0;
                 if (roomData.phase === 'vote' && roomData.dayVotes) {
                     voteCount = Object.values(roomData.dayVotes).filter(v => v === id).length;
@@ -500,7 +503,6 @@
 
                 let actionBtn = '';
                 if (myData.isAlive && player.isAlive) {
-                    // 夜晚行動
                     if (roomData.phase === 'night') {
                         const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
                         if (elapsed < 15 && myData.role === '狼人' && id !== user.uid) {
@@ -517,7 +519,6 @@
                         }
                     }
 
-                    // 投票階段行動
                     if (roomData.phase === 'vote') {
                         let myVote = roomData.dayVotes?.[user.uid];
                         let isVoted = myVote === id;
@@ -534,7 +535,6 @@
                 </div>`;
             }).join('');
 
-            // 個人發言控制面板 (目前發言者顯示「過單 / 結束發言」按鈕)
             let speechControlPanel = '';
             if (roomData.phase === 'day_speech') {
                 const activeSpeakerId = roomData.speechOrder?.[roomData.currentSpeakerIndex];
@@ -555,7 +555,6 @@
                 `;
             }
 
-            // 自由討論：跳過按鈕面板
             let daySkipPanel = '';
             if (roomData.phase === 'day_free' && myData.isAlive) {
                 const daySkips = roomData.daySkips || {};
@@ -575,7 +574,6 @@
                 `;
             }
 
-            // 女巫藥水面板
             let witchSpecialPanel = '';
             if (roomData.phase === 'night' && myData.role === '女巫' && myData.isAlive) {
                 const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
@@ -602,14 +600,13 @@
                 }
             }
 
-            // 房主控制按鈕
             let hostControls = '';
             if(isHost) {
                 if (roomData.phase === 'lobby') hostControls = `<button onclick="window.startGame()" class="bg-indigo-600 hover:bg-indigo-500 px-6 py-2 rounded-lg font-bold">▶ 開始遊戲</button>`;
                 if (roomData.phase === 'night') hostControls = `<button onclick="window.endNight()" class="bg-orange-600 hover:bg-orange-500 px-6 py-2 rounded-lg font-bold">☀ 天亮了 (跳過夜晚)</button>`;
                 if (roomData.phase === 'day_speech') hostControls = `<button onclick="window.nextSpeaker()" class="bg-amber-600 hover:bg-amber-500 px-6 py-2 rounded-lg font-bold">⏩ 強制下一位發言</button>`;
-                if (roomData.phase === 'day_free') hostControls = `<button onclick="window.startVoting()" class="bg-amber-600 hover:bg-amber-500 px-6 py-2 rounded-lg font-bold">🗳️ 提前結束自由討論進入投票</button>`;
-                if (roomData.phase === 'vote') hostControls = `<button onclick="window.endVoting()" class="bg-red-600 hover:bg-red-500 px-6 py-2 rounded-lg font-bold">⚖️ 提前開票 (結算投票)</button>`;
+                if (roomData.phase === 'day_free') hostControls = `<button onclick="window.startVoting()" class="bg-amber-600 hover:bg-amber-500 px-6 py-2 rounded-lg font-bold">🗳️ 提前結束討論進入投票</button>`;
+                if (roomData.phase === 'vote') hostControls = `<button onclick="window.endVoting()" class="bg-red-600 hover:bg-red-500 px-6 py-2 rounded-lg font-bold">⚖️ 提前開票</button>`;
                 if (roomData.phase === 'game_over') hostControls = `<button onclick="window.startGame()" class="bg-green-600 hover:bg-green-500 px-6 py-2 rounded-lg font-bold">↺ 再玩一局</button>`;
             }
 
