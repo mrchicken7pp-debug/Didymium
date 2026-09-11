@@ -50,13 +50,36 @@
             }
         });
 
-        // 倒數計時器監聽 (每秒更新 UI)
+        // 全域計時器 (每秒自動檢查與更新 UI)
         setInterval(() => {
-            if (roomData && roomData.phase === 'night') {
-                const elapsed = Math.floor((Date.now() - roomData.nightStartTime) / 1000);
+            if (!roomData) return;
+            const now = Date.now();
+
+            if (roomData.phase === 'night') {
+                const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
                 if (elapsed >= 45 && roomData.hostId === user?.uid) {
-                    // 倒數 45 秒結束，房主自動觸發夜晚結算
                     window.endNight();
+                } else {
+                    render();
+                }
+            } else if (roomData.phase === 'day_speech') {
+                const elapsed = Math.floor((now - roomData.speakerStartTime) / 1000);
+                if (elapsed >= 25 && roomData.hostId === user?.uid) {
+                    window.nextSpeaker();
+                } else {
+                    render();
+                }
+            } else if (roomData.phase === 'day_free') {
+                const elapsed = Math.floor((now - roomData.dayStartTime) / 1000);
+                if (elapsed >= 60 && roomData.hostId === user?.uid) {
+                    window.startVoting();
+                } else {
+                    render();
+                }
+            } else if (roomData.phase === 'vote') {
+                const elapsed = Math.floor((now - roomData.voteStartTime) / 1000);
+                if (elapsed >= 25 && roomData.hostId === user?.uid) {
+                    window.endVoting();
                 } else {
                     render();
                 }
@@ -87,7 +110,14 @@
                     [user.uid]: { name: playerName, isAlive: true, role: null }
                 },
                 nightStartTime: 0,
+                speakerStartTime: 0,
+                speechOrder: [],
+                currentSpeakerIndex: 0,
+                dayStartTime: 0,
+                voteStartTime: 0,
                 nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null },
+                daySkips: {},
+                dayVotes: {},
                 systemMessage: "等待玩家加入中..."
             });
             
@@ -135,7 +165,7 @@
             });
         }
 
-        // 開始遊戲 (分配角色：狼人、預言家、女巫、平民)
+        // 開始遊戲
         window.startGame = async () => {
             const playerIds = Object.keys(roomData.players);
             if (playerIds.length < 3) return showError("至少需要 3 名玩家才能開始");
@@ -163,6 +193,8 @@
                 phase: "night",
                 nightStartTime: Date.now(),
                 nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null },
+                daySkips: {},
+                dayVotes: {},
                 systemMessage: "天黑請閉眼，45 秒夜晚行動開始..."
             });
         };
@@ -179,14 +211,80 @@
             alert(`【預言家查驗結果】\n${roomData.players[targetId].name} 的身分是：${targetRole === "狼人" ? "壞人 (狼人)" : "好人"}`);
         };
 
-        // 女巫使用解藥
+        // 女巫解藥
         window.handleWitchHeal = async (useSave) => {
             await updateDoc(doc(db, "rooms", roomId), { "nightActions.witchSave": useSave });
         };
 
-        // 女巫使用毒藥
+        // 女巫毒藥
         window.handleWitchPoison = async (targetId) => {
             await updateDoc(doc(db, "rooms", roomId), { "nightActions.witchPoisonTarget": targetId });
+        };
+
+        // 切換下一位個人發言者
+        window.nextSpeaker = async () => {
+            if (roomData.phase !== 'day_speech') return;
+            const order = roomData.speechOrder || [];
+            const nextIndex = (roomData.currentSpeakerIndex || 0) + 1;
+
+            if (nextIndex >= order.length) {
+                // 所有人都發言完畢，進入 1 分鐘自由討論
+                await updateDoc(doc(db, "rooms", roomId), {
+                    phase: "day_free",
+                    dayStartTime: Date.now(),
+                    daySkips: {},
+                    systemMessage: "所有玩家發言完畢！進入 1 分鐘自由討論階段。若超過 3/4 存活玩家同意跳過，將直接進入投票。"
+                });
+            } else {
+                const nextSpeakerId = order[nextIndex];
+                const speakerName = roomData.players[nextSpeakerId]?.name || "玩家";
+                await updateDoc(doc(db, "rooms", roomId), {
+                    currentSpeakerIndex: nextIndex,
+                    speakerStartTime: Date.now(),
+                    systemMessage: `個人發言階段：現在輪到 ${speakerName} 發言 (25 秒)...`
+                });
+            }
+        };
+
+        // 跳過自由討論行動
+        window.handleSkipDiscussion = async () => {
+            if (roomData.phase !== 'day_free' || !roomData.players[user.uid]?.isAlive) return;
+
+            const currentSkips = roomData.daySkips || {};
+            const newSkips = { ...currentSkips, [user.uid]: true };
+            
+            const alivePlayers = Object.values(roomData.players).filter(p => p.isAlive);
+            const totalAlive = alivePlayers.length;
+            const skipCount = Object.keys(newSkips).length;
+
+            const roomRef = doc(db, "rooms", roomId);
+            await updateDoc(roomRef, { daySkips: newSkips });
+
+            // 超過 3/4 存活玩家同意，自動進入投票階段
+            if (skipCount / totalAlive > 0.75) {
+                window.startVoting();
+            }
+        };
+
+        // 進入 25 秒投票階段
+        window.startVoting = async () => {
+            if (roomData.phase === 'vote') return;
+            const roomRef = doc(db, "rooms", roomId);
+            await updateDoc(roomRef, {
+                phase: "vote",
+                voteStartTime: Date.now(),
+                dayVotes: {},
+                systemMessage: "討論結束！進入 25 秒投票階段，請點擊玩家卡片進行投票。"
+            });
+        };
+
+        // 玩家投票行動
+        window.handleVote = async (targetId) => {
+            if (roomData.phase !== 'vote' || !roomData.players[user.uid]?.isAlive) return;
+            const roomRef = doc(db, "rooms", roomId);
+            await updateDoc(roomRef, {
+                [`dayVotes.${user.uid}`]: targetId
+            });
         };
 
         // 結算夜晚
@@ -197,10 +295,8 @@
             const newPlayers = JSON.parse(JSON.stringify(roomData.players));
             let deaths = [];
 
-            // 1. 狼人與女巫解藥結算
             if (wolfTarget) {
                 if (witchSave) {
-                    // 扣除女巫解藥
                     const witchId = Object.keys(newPlayers).find(id => newPlayers[id].role === '女巫');
                     if (witchId) newPlayers[witchId].hasHeal = false;
                 } else {
@@ -209,7 +305,6 @@
                 }
             }
 
-            // 2. 女巫毒藥結算
             if (witchPoisonTarget) {
                 const witchId = Object.keys(newPlayers).find(id => newPlayers[id].role === '女巫');
                 if (witchId) newPlayers[witchId].hasPoison = false;
@@ -224,32 +319,90 @@
                 ? "昨晚是個平安夜，沒有人死亡。" 
                 : `天亮了。昨晚死亡的玩家：${deaths.join('、 ')}。`;
 
-            await updateDoc(doc(db, "rooms", roomId), {
-                players: newPlayers,
-                phase: "day",
-                systemMessage: msg + " 請大家討論並進行投票。"
-            });
-        };
-
-        // 結算勝負
-        window.checkWinCondition = async () => {
-            const alivePlayers = Object.values(roomData.players).filter(p => p.isAlive);
+            // 檢查勝負
+            const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
             const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
             const aliveGood = alivePlayers.length - aliveWolves;
 
-            let winner = null;
-            if (aliveWolves === 0) winner = "🎉 好人陣營獲勝！";
-            else if (aliveWolves >= aliveGood) winner = "🐺 狼人陣營獲勝！";
+            const roomRef = doc(db, "rooms", roomId);
 
-            if (winner) {
-                await updateDoc(doc(db, "rooms", roomId), { phase: "game_over", systemMessage: winner });
+            if (aliveWolves === 0) {
+                await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${msg}\n🎉 好人陣營獲勝！` });
+            } else if (aliveWolves >= aliveGood) {
+                await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${msg}\n🐺 狼人陣營獲勝！` });
             } else {
-                // 進入下一個夜晚
-                await updateDoc(doc(db, "rooms", roomId), { 
-                    phase: "night", 
+                // 隨機產生個人發言順序
+                const aliveIds = Object.keys(newPlayers).filter(id => newPlayers[id].isAlive);
+                const shuffledSpeechOrder = [...aliveIds].sort(() => 0.5 - Math.random());
+                const firstSpeakerName = newPlayers[shuffledSpeechOrder[0]]?.name || "玩家";
+
+                await updateDoc(roomRef, {
+                    players: newPlayers,
+                    phase: "day_speech",
+                    speechOrder: shuffledSpeechOrder,
+                    currentSpeakerIndex: 0,
+                    speakerStartTime: Date.now(),
+                    daySkips: {},
+                    dayVotes: {},
+                    systemMessage: `${msg}\n進入個人發言階段！首先由 ${firstSpeakerName} 發言 (25 秒)。`
+                });
+            }
+        };
+
+        // 結算投票
+        window.endVoting = async () => {
+            if (roomData.phase !== "vote") return;
+
+            const votes = roomData.dayVotes || {};
+            const tally = {};
+            Object.values(votes).forEach(targetId => {
+                tally[targetId] = (tally[targetId] || 0) + 1;
+            });
+
+            let maxVotes = 0;
+            let banishedId = null;
+            let isTie = false;
+
+            Object.entries(tally).forEach(([targetId, count]) => {
+                if (count > maxVotes) {
+                    maxVotes = count;
+                    banishedId = targetId;
+                    isTie = false;
+                } else if (count === maxVotes && maxVotes > 0) {
+                    isTie = true;
+                }
+            });
+
+            const newPlayers = JSON.parse(JSON.stringify(roomData.players));
+            let resultMsg = "";
+
+            if (maxVotes > 0 && !isTie && banishedId) {
+                newPlayers[banishedId].isAlive = false;
+                resultMsg = `${newPlayers[banishedId].name} 獲得最高票 (${maxVotes} 票)，被投票放逐了。`;
+            } else if (isTie) {
+                resultMsg = `最高票平票 (${maxVotes} 票)，今日無人被放逐。`;
+            } else {
+                resultMsg = "無人投票，今日無人被放逐。";
+            }
+
+            // 判斷勝負
+            const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
+            const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
+            const aliveGood = alivePlayers.length - aliveWolves;
+
+            const roomRef = doc(db, "rooms", roomId);
+
+            if (aliveWolves === 0) {
+                await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${resultMsg}\n🎉 好人陣營獲勝！` });
+            } else if (aliveWolves >= aliveGood) {
+                await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${resultMsg}\n🐺 狼人陣營獲勝！` });
+            } else {
+                await updateDoc(roomRef, {
+                    players: newPlayers,
+                    phase: "night",
                     nightStartTime: Date.now(),
                     nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null },
-                    systemMessage: "沒有陣營獲勝，進入下一個夜晚..." 
+                    systemMessage: `${resultMsg} 天黑請閉眼，進入下一個夜晚...`
                 });
             }
         };
@@ -292,97 +445,171 @@
             const isHost = roomData.hostId === user.uid;
             const myData = roomData.players[user.uid] || {};
             const allPlayers = Object.entries(roomData.players);
+            const alivePlayers = allPlayers.filter(([_, p]) => p.isAlive);
+            const totalAlive = alivePlayers.length;
 
-            // 夜晚 45 秒階段計算
-            let elapsed = 0;
-            let subPhase = '';
-            let subPhaseTime = 0;
-            if (roomData.phase === 'night') {
-                elapsed = Math.max(0, Math.floor((Date.now() - roomData.nightStartTime) / 1000));
-                if (elapsed < 15) {
-                    subPhase = 'wolf'; // 狼人階段
-                    subPhaseTime = 15 - elapsed;
-                } else if (elapsed < 30) {
-                    subPhase = 'seer'; // 預言家階段
-                    subPhaseTime = 30 - elapsed;
-                } else {
-                    subPhase = 'witch'; // 女巫階段
-                    subPhaseTime = Math.max(0, 45 - elapsed);
-                }
-            }
+            const now = Date.now();
 
+            // 階段名稱與倒數計時
             let phaseText = '';
             if(roomData.phase === 'lobby') phaseText = '等待中';
+            
             if(roomData.phase === 'night') {
-                if (subPhase === 'wolf') phaseText = `🌙 狼人回合 (${subPhaseTime}s)`;
-                else if (subPhase === 'seer') phaseText = `🔮 預言家回合 (${subPhaseTime}s)`;
-                else phaseText = `🧪 女巫回合 (${subPhaseTime}s)`;
+                const elapsed = Math.max(0, Math.floor((now - roomData.nightStartTime) / 1000));
+                if (elapsed < 15) phaseText = `🌙 狼人回合 (${15 - elapsed}s)`;
+                else if (elapsed < 30) phaseText = `🔮 預言家回合 (${30 - elapsed}s)`;
+                else phaseText = `🧪 女巫回合 (${Math.max(0, 45 - elapsed)}s)`;
             }
-            if(roomData.phase === 'day') phaseText = '☀️ 白天討論';
+
+            if(roomData.phase === 'day_speech') {
+                const elapsed = Math.max(0, Math.floor((now - roomData.speakerStartTime) / 1000));
+                const currentSpeakerId = roomData.speechOrder?.[roomData.currentSpeakerIndex];
+                const speakerName = roomData.players[currentSpeakerId]?.name || "玩家";
+                phaseText = `🎤 ${speakerName} 發言中 (${Math.max(0, 25 - elapsed)}s)`;
+            }
+
+            if(roomData.phase === 'day_free') {
+                const elapsed = Math.max(0, Math.floor((now - roomData.dayStartTime) / 1000));
+                phaseText = `☀️ 自由討論 (${Math.max(0, 60 - elapsed)}s)`;
+            }
+
+            if(roomData.phase === 'vote') {
+                const elapsed = Math.max(0, Math.floor((now - roomData.voteStartTime) / 1000));
+                phaseText = `🗳️ 投票階段 (${Math.max(0, 25 - elapsed)}s)`;
+            }
+
             if(roomData.phase === 'game_over') phaseText = '🏆 遊戲結束';
 
             // 渲染玩家列表卡片
+            const currentSpeakerId = roomData.phase === 'day_speech' ? roomData.speechOrder?.[roomData.currentSpeakerIndex] : null;
+
             let playersHTML = allPlayers.map(([id, player]) => {
-                let cardClass = player.isAlive ? 'border-slate-700 bg-slate-800' : 'border-red-900/50 bg-slate-800/50 opacity-60';
-                let icon = player.isAlive ? '👤' : '💀';
+                let isSpeaking = id === currentSpeakerId;
+                let cardClass = player.isAlive 
+                    ? (isSpeaking ? 'border-amber-400 bg-amber-950/40 shadow-lg shadow-amber-500/20' : 'border-slate-700 bg-slate-800') 
+                    : 'border-red-900/50 bg-slate-800/50 opacity-60';
+                
+                let icon = player.isAlive ? (isSpeaking ? '🎤' : '👤') : '💀';
                 let you = id === user.uid ? ' (你)' : '';
 
+                // 計算得票數
+                let voteCount = 0;
+                if (roomData.phase === 'vote' && roomData.dayVotes) {
+                    voteCount = Object.values(roomData.dayVotes).filter(v => v === id).length;
+                }
+
                 let actionBtn = '';
-                if (roomData.phase === 'night' && myData.isAlive && player.isAlive) {
-                    // 15 秒狼人回合
-                    if (subPhase === 'wolf' && myData.role === '狼人' && id !== user.uid) {
-                        let isSelected = roomData.nightActions.wolfTarget === id;
-                        actionBtn = `<button onclick="window.handleWolfAction('${id}')" class="text-xs ${isSelected ? 'bg-green-600' : 'bg-red-600 hover:bg-red-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '✓ 已鎖定' : '襲擊'}</button>`;
+                if (myData.isAlive && player.isAlive) {
+                    // 夜晚行動
+                    if (roomData.phase === 'night') {
+                        const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
+                        if (elapsed < 15 && myData.role === '狼人' && id !== user.uid) {
+                            let isSelected = roomData.nightActions?.wolfTarget === id;
+                            actionBtn = `<button onclick="window.handleWolfAction('${id}')" class="text-xs ${isSelected ? 'bg-green-600' : 'bg-red-600 hover:bg-red-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '✓ 已鎖定' : '襲擊'}</button>`;
+                        }
+                        if (elapsed >= 15 && elapsed < 30 && myData.role === '預言家' && id !== user.uid) {
+                            let isSelected = roomData.nightActions?.seerTarget === id;
+                            actionBtn = `<button onclick="window.handleSeerAction('${id}')" class="text-xs ${isSelected ? 'bg-green-600' : 'bg-indigo-600 hover:bg-indigo-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '✓ 已查驗' : '查驗'}</button>`;
+                        }
+                        if (elapsed >= 30 && myData.role === '女巫' && myData.hasPoison && id !== user.uid) {
+                            let isSelected = roomData.nightActions?.witchPoisonTarget === id;
+                            actionBtn = `<button onclick="window.handleWitchPoison('${id}')" class="text-xs ${isSelected ? 'bg-purple-800' : 'bg-purple-600 hover:bg-purple-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '☠ 已毒殺' : '使用毒藥'}</button>`;
+                        }
                     }
-                    // 15 秒預言家回合
-                    if (subPhase === 'seer' && myData.role === '預言家' && id !== user.uid) {
-                        let isSelected = roomData.nightActions.seerTarget === id;
-                        actionBtn = `<button onclick="window.handleSeerAction('${id}')" class="text-xs ${isSelected ? 'bg-green-600' : 'bg-indigo-600 hover:bg-indigo-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '✓ 已查驗' : '查驗'}</button>`;
-                    }
-                    // 15 秒女巫回合 (使用毒藥)
-                    if (subPhase === 'witch' && myData.role === '女巫' && myData.hasPoison && id !== user.uid) {
-                        let isSelected = roomData.nightActions.witchPoisonTarget === id;
-                        actionBtn = `<button onclick="window.handleWitchPoison('${id}')" class="text-xs ${isSelected ? 'bg-purple-800' : 'bg-purple-600 hover:bg-purple-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '☠ 已毒殺' : '使用毒藥'}</button>`;
+
+                    // 投票階段行動
+                    if (roomData.phase === 'vote') {
+                        let myVote = roomData.dayVotes?.[user.uid];
+                        let isVoted = myVote === id;
+                        actionBtn = `<button onclick="window.handleVote('${id}')" class="text-xs ${isVoted ? 'bg-green-600' : 'bg-amber-600 hover:bg-amber-500'} px-3 py-1 rounded-full mt-2 w-full font-bold">${isVoted ? '✓ 已投票' : '🗳️ 投給他'}</button>`;
                     }
                 }
 
-                return `<div class="p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${cardClass}">
+                return `<div class="p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all relative ${cardClass}">
+                    ${voteCount > 0 ? `<span class="absolute top-2 right-2 bg-amber-500 text-slate-900 text-xs font-bold px-2 py-0.5 rounded-full">${voteCount} 票</span>` : ''}
+                    ${isSpeaking ? `<span class="absolute top-2 left-2 bg-amber-400 text-slate-950 text-xs font-bold px-2 py-0.5 rounded-full animate-pulse">發言中</span>` : ''}
                     <div class="text-3xl">${icon}</div>
                     <span class="font-bold">${player.name}${you}</span>
                     ${actionBtn}
                 </div>`;
             }).join('');
 
-            // 女巫專屬控制面板 (解藥視窗)
-            let witchSpecialPanel = '';
-            if (roomData.phase === 'night' && subPhase === 'witch' && myData.role === '女巫' && myData.isAlive) {
-                const wolfTargetId = roomData.nightActions.wolfTarget;
-                const wolfTargetName = wolfTargetId ? roomData.players[wolfTargetId]?.name : "無人受害";
+            // 個人發言控制面板 (目前發言者顯示「過單 / 結束發言」按鈕)
+            let speechControlPanel = '';
+            if (roomData.phase === 'day_speech') {
+                const activeSpeakerId = roomData.speechOrder?.[roomData.currentSpeakerIndex];
+                const activeSpeakerName = roomData.players[activeSpeakerId]?.name || '玩家';
+                const isMyTurn = activeSpeakerId === user.uid;
 
-                witchSpecialPanel = `
-                    <div class="mt-4 p-4 bg-purple-900/40 border border-purple-500 rounded-lg text-left">
-                        <p class="text-purple-300 font-bold mb-2">🧪 女巫藥水面板：</p>
-                        <p class="text-sm text-slate-300 mb-3">今晚被襲擊的玩家：<span class="text-red-400 font-bold">${wolfTargetName}</span></p>
-                        <div class="flex gap-2 flex-wrap">
-                            ${myData.hasHeal && wolfTargetId ? `
-                                <button onclick="window.handleWitchHeal(true)" class="text-xs ${roomData.nightActions.witchSave ? 'bg-green-600' : 'bg-emerald-600 hover:bg-emerald-500'} px-3 py-2 rounded-lg font-bold">
-                                    ${roomData.nightActions.witchSave ? '✓ 已使用解藥救人' : '💚 使用解藥'}
-                                </button>
-                                ${roomData.nightActions.witchSave ? `<button onclick="window.handleWitchHeal(false)" class="text-xs bg-slate-600 px-3 py-2 rounded-lg">取消使用解藥</button>` : ''}
-                            ` : `<span class="text-xs text-slate-500 bg-slate-800 p-2 rounded">解藥：${myData.hasHeal ? '無人需救' : '已使用過'}</span>`}
-                            
-                            <span class="text-xs text-slate-400 self-center ml-auto">毒藥：${myData.hasPoison ? '可在下方點擊玩家毒殺' : '已使用過'}</span>
-                        </div>
+                speechControlPanel = `
+                    <div class="mt-4 p-4 bg-amber-900/30 border border-amber-500/50 rounded-lg flex flex-col items-center gap-3">
+                        <p class="text-amber-300 font-bold">📢 正在發言：<span class="text-white text-lg underline">${activeSpeakerName}</span></p>
+                        ${isMyTurn ? `
+                            <button onclick="window.nextSpeaker()" class="bg-amber-500 hover:bg-amber-400 text-slate-950 text-base font-bold px-6 py-2 rounded-lg transition shadow-lg animate-bounce">
+                                🎤 結束我的發言 (過單)
+                            </button>
+                        ` : `
+                            <p class="text-xs text-slate-400">請等待發言結束或玩家主動過單...</p>
+                        `}
                     </div>
                 `;
+            }
+
+            // 自由討論：跳過按鈕面板
+            let daySkipPanel = '';
+            if (roomData.phase === 'day_free' && myData.isAlive) {
+                const daySkips = roomData.daySkips || {};
+                const skipCount = Object.keys(daySkips).length;
+                const requiredSkips = Math.floor(totalAlive * 0.75) + 1;
+                const hasSkipped = daySkips[user.uid];
+
+                daySkipPanel = `
+                    <div class="mt-4 p-4 bg-slate-700/60 border border-slate-600 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <span class="text-sm text-slate-300">
+                            ⏩ 跳過自由討論：<strong class="text-amber-400">${skipCount}</strong> / ${requiredSkips} 人同意 (需超過 3/4 存活玩家)
+                        </span>
+                        <button onclick="window.handleSkipDiscussion()" ${hasSkipped ? 'disabled' : ''} class="${hasSkipped ? 'bg-slate-600 text-slate-400' : 'bg-amber-600 hover:bg-amber-500 text-white'} text-sm font-bold px-4 py-2 rounded-lg transition">
+                            ${hasSkipped ? '✓ 已要求跳過' : '⏩ 要求跳過討論'}
+                        </button>
+                    </div>
+                `;
+            }
+
+            // 女巫藥水面板
+            let witchSpecialPanel = '';
+            if (roomData.phase === 'night' && myData.role === '女巫' && myData.isAlive) {
+                const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
+                if (elapsed >= 30) {
+                    const wolfTargetId = roomData.nightActions?.wolfTarget;
+                    const wolfTargetName = wolfTargetId ? roomData.players[wolfTargetId]?.name : "無人受害";
+
+                    witchSpecialPanel = `
+                        <div class="mt-4 p-4 bg-purple-900/40 border border-purple-500 rounded-lg text-left">
+                            <p class="text-purple-300 font-bold mb-2">🧪 女巫藥水面板：</p>
+                            <p class="text-sm text-slate-300 mb-3">今晚被襲擊的玩家：<span class="text-red-400 font-bold">${wolfTargetName}</span></p>
+                            <div class="flex gap-2 flex-wrap">
+                                ${myData.hasHeal && wolfTargetId ? `
+                                    <button onclick="window.handleWitchHeal(true)" class="text-xs ${roomData.nightActions?.witchSave ? 'bg-green-600' : 'bg-emerald-600 hover:bg-emerald-500'} px-3 py-2 rounded-lg font-bold">
+                                        ${roomData.nightActions?.witchSave ? '✓ 已使用解藥救人' : '💚 使用解藥'}
+                                    </button>
+                                    ${roomData.nightActions?.witchSave ? `<button onclick="window.handleWitchHeal(false)" class="text-xs bg-slate-600 px-3 py-2 rounded-lg">取消解藥</button>` : ''}
+                                ` : `<span class="text-xs text-slate-500 bg-slate-800 p-2 rounded">解藥：${myData.hasHeal ? '無人需救' : '已使用過'}</span>`}
+                                
+                                <span class="text-xs text-slate-400 self-center ml-auto">毒藥：${myData.hasPoison ? '可在下方點擊玩家毒殺' : '已使用過'}</span>
+                            </div>
+                        </div>
+                    `;
+                }
             }
 
             // 房主控制按鈕
             let hostControls = '';
             if(isHost) {
                 if (roomData.phase === 'lobby') hostControls = `<button onclick="window.startGame()" class="bg-indigo-600 hover:bg-indigo-500 px-6 py-2 rounded-lg font-bold">▶ 開始遊戲</button>`;
-                if (roomData.phase === 'night') hostControls = `<button onclick="window.endNight()" class="bg-orange-600 hover:bg-orange-500 px-6 py-2 rounded-lg font-bold">☀ 手動跳過夜晚 (立刻天亮)</button>`;
-                if (roomData.phase === 'day') hostControls = `<button onclick="window.checkWinCondition()" class="bg-red-600 hover:bg-red-500 px-6 py-2 rounded-lg font-bold">⚖ 結算白天 (判斷勝負)</button>`;
+                if (roomData.phase === 'night') hostControls = `<button onclick="window.endNight()" class="bg-orange-600 hover:bg-orange-500 px-6 py-2 rounded-lg font-bold">☀ 天亮了 (跳過夜晚)</button>`;
+                if (roomData.phase === 'day_speech') hostControls = `<button onclick="window.nextSpeaker()" class="bg-amber-600 hover:bg-amber-500 px-6 py-2 rounded-lg font-bold">⏩ 強制下一位發言</button>`;
+                if (roomData.phase === 'day_free') hostControls = `<button onclick="window.startVoting()" class="bg-amber-600 hover:bg-amber-500 px-6 py-2 rounded-lg font-bold">🗳️ 提前結束自由討論進入投票</button>`;
+                if (roomData.phase === 'vote') hostControls = `<button onclick="window.endVoting()" class="bg-red-600 hover:bg-red-500 px-6 py-2 rounded-lg font-bold">⚖️ 提前開票 (結算投票)</button>`;
                 if (roomData.phase === 'game_over') hostControls = `<button onclick="window.startGame()" class="bg-green-600 hover:bg-green-500 px-6 py-2 rounded-lg font-bold">↺ 再玩一局</button>`;
             }
 
@@ -406,14 +633,16 @@
                         <p class="text-slate-400 text-sm mt-1">你的暱稱：${myData.name}</p>
                     </div>
                     <div class="text-right">
-                        <span class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : 'bg-slate-600'}">${phaseText}</span>
+                        <span class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span>
                     </div>
                 </div>
 
                 <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 mb-6 text-center shadow-lg">
-                    <p class="text-lg md:text-xl text-slate-300">${roomData.systemMessage}</p>
+                    <p class="text-lg md:text-xl text-slate-300 whitespace-pre-line">${roomData.systemMessage}</p>
                     ${roleUI}
                     ${witchSpecialPanel}
+                    ${speechControlPanel}
+                    ${daySkipPanel}
                 </div>
 
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8">
