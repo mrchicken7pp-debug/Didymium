@@ -39,7 +39,7 @@
         let error = "";
         let isTransitioning = false;
         let isAuthChecking = true;
-        let activeChatTab = 'global'; // 'global' or 'wolf'
+        let activeChatTab = 'global'; 
         
         // Chat persistence state
         window.activeChatInputText = "";
@@ -237,6 +237,22 @@
             } catch (err) { alert("離開房間時發生錯誤：" + err.message); }
         };
 
+        window.kickPlayer = async (targetId) => {
+            if (!roomId || !user || !roomData) return;
+            if (roomData.hostId !== user.uid) return;
+            if (roomData.phase !== 'lobby') return alert("只能在等待階段踢除玩家！");
+            
+            const targetPlayer = roomData.players[targetId];
+            if (!targetPlayer || !confirm(`確定要將【${targetPlayer.name}】踢出房間嗎？`)) return;
+
+            try {
+                const roomRef = doc(db, "rooms", roomId);
+                await updateDoc(roomRef, { [`players.${targetId}`]: null });
+            } catch (err) {
+                alert("踢出失敗：" + err.message);
+            }
+        };
+
         let unsubscribeRoom = null;
         function listenToRoom(id) {
             if (unsubscribeRoom) unsubscribeRoom();
@@ -244,6 +260,17 @@
                 isTransitioning = false;
                 if (docSnap.exists()) { 
                     roomData = docSnap.data(); 
+                    
+                    // Check if current user was kicked
+                    if (user && roomData.players && !roomData.players[user.uid]) {
+                        alert("你已被房主踢出房間。");
+                        if (unsubscribeRoom) unsubscribeRoom();
+                        roomId = null; 
+                        roomData = null; 
+                        render();
+                        return;
+                    }
+
                     render(); 
                 } 
                 else { showError("房間不存在"); roomId = null; roomData = null; render(); }
@@ -317,7 +344,7 @@
                     daySkips: {}, 
                     dayVotes: {}, 
                     systemMessage: "天黑請閉眼，夜晚行動開始...",
-                    wolfChat: [] // Clear wolf chat for new game
+                    wolfChat: [] 
                 });
             } catch (error) {
                 console.error("Start Game Error:", error);
@@ -419,17 +446,15 @@
             const newPlayers = JSON.parse(JSON.stringify(roomData.players));
             let deaths = [];
 
-            // Process Ghost Rider logic first
             const grId = Object.keys(newPlayers).find(id => newPlayers[id].role === '惡靈騎士');
             if (grId && ghostRiderAction) {
                 newPlayers[grId].hasGhostRiderAbility = false;
                 if (ghostRiderAction === 'reflect' && witchPoisonTarget === grId) {
                     const witchId = Object.keys(newPlayers).find(id => newPlayers[id].role === '女巫');
-                    if (witchId) witchPoisonTarget = witchId; // Redirect poison to witch
+                    if (witchId) witchPoisonTarget = witchId; 
                 }
             }
 
-            // Generate Seer result for the next day
             const seerId = Object.keys(newPlayers).find(id => newPlayers[id].role === '預言家');
             if (seerId && seerTarget) {
                 let isBad = (newPlayers[seerTarget].role === "狼人" || newPlayers[seerTarget].role === "惡靈騎士");
@@ -520,7 +545,6 @@
             };
             
             try {
-                // Clear input tracking before sending to prevent old text restoring
                 window.activeChatInputText = ''; 
                 input.value = '';
                 await updateDoc(doc(db, "rooms", roomId), {
@@ -635,13 +659,11 @@
             if(roomData.phase === 'vote') phaseText = `🗳️ 投票階段 (${Math.max(0, 25 - Math.floor((now - roomData.voteStartTime) / 1000))}s)`;
             if(roomData.phase === 'game_over') phaseText = '🏆 遊戲結束';
 
-            // --- Chat System Integration ---
             const isWolfTeam = myData.role === '狼人' || myData.role === '惡靈騎士';
             if (!isWolfTeam && activeChatTab === 'wolf') activeChatTab = 'global'; 
 
             const chatMessages = activeChatTab === 'global' ? (roomData.globalChat || []) : (roomData.wolfChat || []);
             
-            // Add oninput, onfocus, and onblur to specifically track state across ALL renders universally
             const chatHtml = `
             <div class="bg-slate-800 rounded-xl border border-slate-700 mb-6 shadow-lg flex flex-col h-64">
                 <div class="flex border-b border-slate-700">
@@ -669,7 +691,6 @@
                 </div>
             </div>
             `;
-            // -------------------------------
 
             let roleSetupUI = '';
             if (roomData.phase === 'lobby') {
@@ -709,6 +730,12 @@
                 let displayIconHTML = player.isAlive ? (isSpeaking ? '<span class="text-4xl">🎤</span>' : getIconHTML(player.icon, "w-12 h-12 text-4xl")) : '<span class="text-4xl">💀</span>';
                 let voteCount = (roomData.phase === 'vote' && roomData.dayVotes) ? Object.values(roomData.dayVotes).filter(v => v === id).length : 0;
                 let actionBtn = '';
+                
+                // Owner Kick Button (Only in lobby, not on yourself)
+                let kickBtn = '';
+                if (isHost && roomData.phase === 'lobby' && id !== user.uid) {
+                    kickBtn = `<button onclick="window.kickPlayer('${id}')" class="absolute top-2 left-2 bg-red-600/90 hover:bg-red-500 text-white text-xs font-bold px-2 py-1 rounded shadow-md z-10">踢出</button>`;
+                }
 
                 if (myData.isAlive && player.isAlive) {
                     if (roomData.phase === 'night') {
@@ -738,6 +765,7 @@
                 }
 
                 return `<div class="p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all relative ${cardClass}">
+                    ${kickBtn}
                     ${voteCount > 0 ? `<span class="absolute top-2 right-2 bg-amber-500 text-slate-900 text-xs font-bold px-2 py-0.5 rounded-full">${voteCount} 票</span>` : ''}
                     ${isSpeaking ? `<span class="absolute top-2 left-2 bg-amber-400 text-slate-950 text-xs font-bold px-2 py-0.5 rounded-full animate-pulse">發言中</span>` : ''}
                     <div class="mb-1 flex justify-center items-center w-12 h-12">${displayIconHTML}</div>
@@ -839,7 +867,6 @@
                     <div class="text-right"><span id="phaseTimerDisplay" class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span></div>
                 </div>
 
-                <!-- CHAT SECTION -->
                 ${chatHtml}
 
                 <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 mb-6 text-center shadow-lg">
@@ -861,7 +888,6 @@
                 ${isHost ? `<div class="bg-slate-800 p-4 rounded-xl border border-indigo-500/30 flex justify-center items-center gap-4 flex-wrap"><span class="text-lg hidden md:block">👑 房主控制：</span>${hostControls}</div>` : ''}
             `;
 
-            // Auto-scroll chat box and restore keyboard focus
             setTimeout(() => {
                 const chatBox = document.getElementById('chatBox');
                 if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
@@ -870,7 +896,7 @@
                 if (newChatInput && window.isChatInputFocused) {
                     newChatInput.focus();
                     const len = newChatInput.value.length;
-                    newChatInput.setSelectionRange(len, len); // Move cursor to the end
+                    newChatInput.setSelectionRange(len, len); 
                 }
             }, 10);
         }
