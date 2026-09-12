@@ -13,7 +13,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
         const firebaseConfig = {
@@ -35,20 +35,20 @@
         let user = null;
         let roomId = null;
         let roomData = null;
-        let playerName = "";
+        let playerName = localStorage.getItem("werewolf_playerName") || "";
         let error = "";
         let isTransitioning = false;
         let isAuthChecking = true;
 
         let showProfileModal = false;
-        let selectedIcon = "👤"; 
-        const availableIcons = ["👤", "🐺", "🧙‍♀️", "🔮", "👦", "👧", "🤡", "👻", "👽", "🤖", "🐱", "🐶"];
+        let selectedIcon = localStorage.getItem("werewolf_playerIcon") || "👤"; 
+        const availableIcons = ["👤", "⚔️", "🐺", "🧙‍♀️", "🔮", "👦", "👧", "🤡", "👻", "👽", "🤖", "🐱", "🐶"];
 
         onAuthStateChanged(auth, (currentUser) => {
             user = currentUser;
             isAuthChecking = false;
-            playerName = localStorage.getItem('werewolf_name') || (user ? user.displayName : "") || "";
-            selectedIcon = localStorage.getItem('werewolf_icon') || "👤";
+            playerName = localStorage.getItem("werewolf_playerName") || (user?.displayName || "");
+            selectedIcon = localStorage.getItem("werewolf_playerIcon") || "👤";
             render();
         });
 
@@ -111,8 +111,8 @@
             if (!newName.trim()) return alert("請輸入暱稱！");
             playerName = newName;
             
-            localStorage.setItem('werewolf_name', playerName);
-            localStorage.setItem('werewolf_icon', selectedIcon);
+            localStorage.setItem("werewolf_playerName", playerName);
+            localStorage.setItem("werewolf_playerIcon", selectedIcon);
 
             if (roomId && roomData && roomData.players[user.uid]) {
                 const roomRef = doc(db, "rooms", roomId);
@@ -131,7 +131,7 @@
         }
 
         function checkTimersAndRender() {
-            if (!roomData || isTransitioning) return;
+            if (!roomData || isTransitioning || roomData.phase === 'lobby') return;
             const now = Date.now();
             const isHost = roomData.hostId === user?.uid;
 
@@ -159,18 +159,20 @@
         setInterval(checkTimersAndRender, 1000);
         document.addEventListener("visibilitychange", () => { if (document.visibilityState === 'visible') checkTimersAndRender(); });
 
-        const generateRoomCode = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+        const generateRoomCode = () => Math.random().toString(36).substring(2, 8).toUpperCase();
         function showError(msg) { error = msg; render(); setTimeout(() => { error = ""; render(); }, 3000); }
 
         window.createRoom = async () => {
             const nameInput = document.getElementById('playerName').value;
             if (!nameInput.trim()) return showError("請輸入玩家名稱");
             playerName = nameInput;
+            localStorage.setItem("werewolf_playerName", playerName);
+            localStorage.setItem("werewolf_playerIcon", selectedIcon);
             const newRoomId = generateRoomCode();
             await setDoc(doc(db, "rooms", newRoomId), {
                 hostId: user.uid, phase: "lobby",
                 players: { [user.uid]: { name: playerName, icon: selectedIcon, isAlive: true, role: null } },
-                roleSettings: { wolf: 1, seer: 1, witch: 1, villager: 0 },
+                roleSettings: { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 },
                 nightStartTime: 0, speakerStartTime: 0, speechOrder: [], currentSpeakerIndex: 0, dayStartTime: 0, voteStartTime: 0,
                 nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null }, daySkips: {}, dayVotes: {},
                 systemMessage: "等待玩家加入中..."
@@ -183,6 +185,8 @@
             const codeInput = document.getElementById('roomCode').value.toUpperCase();
             if (!nameInput.trim() || !codeInput.trim()) return showError("請輸入名稱與代碼");
             playerName = nameInput;
+            localStorage.setItem("werewolf_playerName", playerName);
+            localStorage.setItem("werewolf_playerIcon", selectedIcon);
             try {
                 await setDoc(doc(db, "rooms", codeInput), { players: { [user.uid]: { name: playerName, icon: selectedIcon, isAlive: true, role: null } } }, { merge: true });
                 roomId = codeInput; listenToRoom(roomId);
@@ -201,29 +205,22 @@
 
         window.updateRoleSetting = async (role, delta) => {
             if (roomData.phase !== 'lobby' || roomData.hostId !== user.uid) return;
-            
-            const roomRef = doc(db, "rooms", roomId);
-            const docSnap = await getDoc(roomRef);
-            if (!docSnap.exists()) return;
-            
-            const latestData = docSnap.data();
-            const currentSettings = latestData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
+            const currentSettings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
             const newValue = Math.max(0, (currentSettings[role] || 0) + delta);
-            
-            const newSettings = { ...currentSettings, [role]: newValue };
-            await updateDoc(roomRef, { roleSettings: newSettings });
+            await updateDoc(doc(db, "rooms", roomId), { [`roleSettings.${role}`]: newValue });
         };
 
         window.startGame = async () => {
             const playerIds = Object.keys(roomData.players);
-            const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
-            const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.villager || 0);
+            const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
+            const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.villager || 0);
             if (totalRoles !== playerIds.length) return showError(`角色數量 (${totalRoles}) 與玩家人數 (${playerIds.length}) 不符！`);
 
             let rolePool = [];
             for (let i = 0; i < (settings.wolf || 0); i++) rolePool.push("狼人");
             for (let i = 0; i < (settings.seer || 0); i++) rolePool.push("預言家");
             for (let i = 0; i < (settings.witch || 0); i++) rolePool.push("女巫");
+            for (let i = 0; i < (settings.knight || 0); i++) rolePool.push("騎士");
             for (let i = 0; i < (settings.villager || 0); i++) rolePool.push("平民");
             rolePool.sort(() => 0.5 - Math.random());
 
@@ -234,6 +231,8 @@
                 newPlayers[id].isAlive = true;
                 if (assignedRole === "女巫") { newPlayers[id].hasHeal = true; newPlayers[id].hasPoison = true; }
                 else { delete newPlayers[id].hasHeal; delete newPlayers[id].hasPoison; }
+                if (assignedRole === "騎士") { newPlayers[id].hasKnightAbility = true; }
+                else { delete newPlayers[id].hasKnightAbility; }
             });
 
             await updateDoc(doc(db, "rooms", roomId), {
@@ -261,6 +260,44 @@
         };
         window.handleWitchHeal = async (useSave) => await updateDoc(doc(db, "rooms", roomId), { "nightActions.witchSave": useSave });
         window.handleWitchPoison = async (targetId) => await updateDoc(doc(db, "rooms", roomId), { "nightActions.witchPoisonTarget": targetId });
+
+        window.handleKnightDuel = async (targetId) => {
+            if (!roomData || isTransitioning) return;
+            const myPlayer = roomData.players[user.uid];
+            if (myPlayer?.role !== '騎士' || !myPlayer?.hasKnightAbility || !myPlayer?.isAlive) return;
+
+            const targetPlayer = roomData.players[targetId];
+            if (!targetPlayer || !targetPlayer.isAlive) return;
+
+            if (!confirm(`確定要對 ${targetPlayer.name} 發動騎士決鬥嗎？技能一局只能使用一次！`)) return;
+
+            isTransitioning = true;
+            const newPlayers = JSON.parse(JSON.stringify(roomData.players));
+            newPlayers[user.uid].hasKnightAbility = false;
+
+            let duelMsg = "";
+            const isTargetWolf = targetPlayer.role === "狼人";
+
+            if (isTargetWolf) {
+                newPlayers[targetId].isAlive = false;
+                duelMsg = `⚔️ 騎士【${myPlayer.name}】發動決鬥！\n【${targetPlayer.name}】是狼人，當場死亡！`;
+            } else {
+                newPlayers[user.uid].isAlive = false;
+                duelMsg = `⚔️ 騎士【${myPlayer.name}】發動決鬥！\n【${targetPlayer.name}】是好人，騎士【${myPlayer.name}】以死謝罪身亡！`;
+            }
+
+            const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
+            const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
+            const roomRef = doc(db, "rooms", roomId);
+
+            if (aliveWolves === 0) {
+                await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${duelMsg}\n🎉 好人陣營獲勝！` });
+            } else if (aliveWolves >= (alivePlayers.length - aliveWolves)) {
+                await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${duelMsg}\n🐺 狼人陣營獲勝！` });
+            } else {
+                await updateDoc(roomRef, { players: newPlayers, systemMessage: duelMsg });
+            }
+        };
 
         window.nextSpeaker = async () => {
             if (roomData.phase !== 'day_speech' || isTransitioning) return;
@@ -467,8 +504,8 @@
 
             let roleSetupUI = '';
             if (roomData.phase === 'lobby') {
-                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
-                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.villager || 0);
+                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
+                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.villager || 0);
                 roleSetupUI = `
                     <div class="bg-slate-700/80 p-5 rounded-xl mt-4 mb-2 border border-slate-600 text-left">
                         <h3 class="text-lg font-bold text-amber-400 mb-3 flex justify-between items-center">
@@ -476,8 +513,8 @@
                             <span class="text-sm text-slate-300">角色總數: <span class="${totalRoles === allPlayers.length ? 'text-green-400' : 'text-red-400'} font-bold text-lg">${totalRoles}</span> / 玩家人數: <span class="font-bold text-lg">${allPlayers.length}</span></span>
                         </h3>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            ${['wolf', 'seer', 'witch', 'villager'].map(role => {
-                                const labels = { wolf: '🐺 狼人', seer: '🔮 預言家', witch: '🧪 女巫', villager: '🧑‍🌾 平民' };
+                            ${['wolf', 'seer', 'witch', 'knight', 'villager'].map(role => {
+                                const labels = { wolf: '🐺 狼人', seer: '🔮 預言家', witch: '🧪 女巫', knight: '⚔️ 騎士', villager: '🧑‍🌾 平民' };
                                 return `<div class="flex justify-between items-center bg-slate-800 p-3 rounded-lg border border-slate-700">
                                     <span class="font-bold">${labels[role]}</span>
                                     <div class="flex items-center gap-3">
@@ -526,6 +563,9 @@
                         let isVoted = roomData.dayVotes?.[user.uid] === id;
                         actionBtn = `<button onclick="window.handleVote('${id}')" class="text-xs ${isVoted ? 'bg-green-600' : 'bg-amber-600 hover:bg-amber-500'} px-3 py-1 rounded-full mt-2 w-full font-bold">${isVoted ? '✓ 已投票' : '🗳️ 投給他'}</button>`;
                     }
+                    if ((roomData.phase === 'day_speech' || roomData.phase === 'day_free' || roomData.phase === 'vote') && myData.role === '騎士' && myData.hasKnightAbility && id !== user.uid) {
+                        actionBtn += `<button onclick="window.handleKnightDuel('${id}')" class="text-xs bg-amber-600 hover:bg-amber-500 px-3 py-1 rounded-full mt-1 w-full font-bold">⚔️ 決鬥</button>`;
+                    }
                 }
 
                 return `<div class="p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all relative ${cardClass}">
@@ -562,11 +602,18 @@
                     </div>
                 </div>` : '';
 
+            let knightPanel = myData.role === '騎士' && myData.isAlive && roomData.phase !== 'lobby' && roomData.phase !== 'night' ? `
+                <div class="mt-4 p-3 bg-amber-900/40 border border-amber-500/60 rounded-lg text-left">
+                    <p class="text-amber-300 font-bold text-sm">⚔️ 騎士專屬面板：</p>
+                    <p class="text-xs text-slate-300 mt-1">${myData.hasKnightAbility ? '在發言、討論或投票階段，你點擊任意玩家卡片的「⚔️ 決鬥」即可發動技能。若對方是狼人則狼人死亡；若對方是好人則你自己以死謝罪！' : '你的騎士決鬥技能本局已使用過。'}</p>
+                </div>
+            ` : '';
+
             let hostControls = '';
             if(isHost) {
                 if (roomData.phase === 'lobby') {
-                    const s = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
-                    const isReady = (s.wolf + s.seer + s.witch + s.villager) === allPlayers.length;
+                    const s = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
+                    const isReady = (s.wolf + s.seer + s.witch + (s.knight || 0) + s.villager) === allPlayers.length;
                     hostControls = `<button onclick="window.startGame()" class="${isReady ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-600 cursor-not-allowed opacity-50'} px-6 py-2 rounded-lg font-bold">▶ 開始遊戲</button>`;
                 }
                 if (roomData.phase === 'night') hostControls = `<button onclick="window.endNight()" class="bg-orange-600 hover:bg-orange-500 px-6 py-2 rounded-lg font-bold">☀ 天亮了</button>`;
@@ -578,7 +625,7 @@
 
             let roleUI = roomData.phase !== 'lobby' ? `<div class="mt-4 p-4 bg-slate-700 inline-block rounded-lg border border-slate-600">
                 <p class="text-sm text-slate-400 mb-1">你的身分</p>
-                <p class="text-2xl font-bold ${myData.role === '狼人' ? 'text-red-400' : (myData.role === '女巫' ? 'text-purple-400' : (myData.role === '預言家' ? 'text-indigo-400' : 'text-blue-400'))}">${myData.role}${!myData.isAlive ? ' (已死亡)' : ''}</p>
+                <p class="text-2xl font-bold ${myData.role === '狼人' ? 'text-red-400' : (myData.role === '女巫' ? 'text-purple-400' : (myData.role === '預言家' ? 'text-indigo-400' : (myData.role === '騎士' ? 'text-amber-400' : 'text-blue-400')))}">${myData.role}${!myData.isAlive ? ' (已死亡)' : ''}</p>
             </div>` : '';
 
             appDiv.innerHTML = `
@@ -601,6 +648,7 @@
                     ${roleSetupUI}
                     ${roleUI}
                     ${witchSpecialPanel}
+                    ${knightPanel}
                     ${speechControlPanel}
                     ${daySkipPanel}
                 </div>
