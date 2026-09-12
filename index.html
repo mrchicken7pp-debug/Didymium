@@ -17,7 +17,7 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
         // 💡 Increment version to update client cache
-        const CURRENT_VERSION = 3; 
+        const CURRENT_VERSION = 4; 
 
         const firebaseConfig = {
             apiKey: "AIzaSyB9sxYCA7_ayevgpY9BtWrK7nHJIR7bkv8",
@@ -57,7 +57,15 @@
             isAuthChecking = false;
             playerName = localStorage.getItem("werewolf_playerName") || (user?.displayName || "");
             selectedIcon = localStorage.getItem("werewolf_playerIcon") || "👤";
-            render();
+
+            // 🔄 Auto-reconnect to saved room on page refresh
+            const savedRoomId = localStorage.getItem("werewolf_roomId");
+            if (user && savedRoomId && !roomId) {
+                roomId = savedRoomId;
+                listenToRoom(roomId);
+            } else {
+                render();
+            }
         });
 
         window.loginWithGoogle = async () => { try { await signInWithPopup(auth, googleProvider); } catch (err) { showError("Google 登入失敗"); } };
@@ -74,7 +82,14 @@
             try { await createUserWithEmailAndPassword(auth, email, pw); } catch (err) { showError("註冊失敗"); }
         };
         window.loginAnonymously = async () => { try { await signInAnonymously(auth); } catch (err) { showError("訪客登入失敗"); } };
-        window.logout = async () => { await signOut(auth); roomId = null; roomData = null; if(unsubscribeRoom) unsubscribeRoom(); render(); };
+        window.logout = async () => { 
+            localStorage.removeItem("werewolf_roomId");
+            await signOut(auth); 
+            roomId = null; 
+            roomData = null; 
+            if(unsubscribeRoom) unsubscribeRoom(); 
+            render(); 
+        };
 
         window.openProfileEditor = () => {
             showProfileModal = true;
@@ -212,7 +227,9 @@
                 systemMessage: "等待玩家加入中...",
                 globalChat: [], wolfChat: []
             });
-            roomId = newRoomId; listenToRoom(roomId);
+            roomId = newRoomId; 
+            localStorage.setItem("werewolf_roomId", roomId);
+            listenToRoom(roomId);
         };
 
         window.joinRoom = async () => {
@@ -224,7 +241,9 @@
             localStorage.setItem("werewolf_playerIcon", selectedIcon);
             try {
                 await setDoc(doc(db, "rooms", codeInput), { players: { [user.uid]: { name: playerName, icon: selectedIcon, isAlive: true, role: null } } }, { merge: true });
-                roomId = codeInput; listenToRoom(roomId);
+                roomId = codeInput; 
+                localStorage.setItem("werewolf_roomId", roomId);
+                listenToRoom(roomId);
             } catch (err) { showError("無法加入房間，請檢查代碼或權限"); }
         };
 
@@ -234,6 +253,7 @@
                 const roomRef = doc(db, "rooms", roomId);
                 localStorage.setItem("werewolf_playerName", playerName);
                 localStorage.setItem("werewolf_playerIcon", selectedIcon);
+                localStorage.removeItem("werewolf_roomId");
                 await updateDoc(roomRef, { [`players.${user.uid}`]: deleteField() });
                 if (unsubscribeRoom) unsubscribeRoom();
                 roomId = null; roomData = null;
@@ -267,6 +287,7 @@
                     
                     if (user && roomData.players && !roomData.players[user.uid]) {
                         alert("你已被房主踢出房間。");
+                        localStorage.removeItem("werewolf_roomId");
                         if (unsubscribeRoom) unsubscribeRoom();
                         roomId = null; 
                         roomData = null; 
@@ -276,10 +297,20 @@
 
                     render(); 
                 } 
-                else { showError("房間不存在"); roomId = null; roomData = null; render(); }
+                else { 
+                    showError("房間不存在"); 
+                    localStorage.removeItem("werewolf_roomId");
+                    roomId = null; 
+                    roomData = null; 
+                    render(); 
+                }
             }, (error) => {
                 console.error("Firestore Snapshot Error:", error);
                 showError("與伺服器連線中斷或權限不足");
+                localStorage.removeItem("werewolf_roomId");
+                roomId = null;
+                roomData = null;
+                render();
             });
         }
 
@@ -950,7 +981,7 @@
                             <div class="w-8 h-8 rounded overflow-hidden flex justify-center items-center bg-slate-700">${getIconHTML(myData.icon, "w-full h-full text-xl")}</div> 
                             <span class="font-bold">${myData.name}</span>
                             <button onclick="window.openProfileEditor()" class="text-xs bg-slate-600 hover:bg-slate-500 px-2 py-1 rounded shadow transition">✏️ 編輯</button>
-                            <button onclick="window.logout()" class="text-xs text-red-400 underline ml-2 hover:text-red-300">離開並登出</button>
+                            <button onclick="window.leaveRoom()" class="text-xs text-red-400 underline ml-2 hover:text-red-300">離開房間</button>
                         </div>
                     </div>
                     <div class="text-right"><span id="phaseTimerDisplay" class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span></div>
