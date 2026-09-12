@@ -13,7 +13,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
         const firebaseConfig = {
@@ -39,6 +39,7 @@
         let error = "";
         let isTransitioning = false;
         let isAuthChecking = true;
+        let activeChatTab = 'global'; // 'global' or 'wolf'
 
         let showProfileModal = false;
         let selectedIcon = localStorage.getItem("werewolf_playerIcon") || "👤"; 
@@ -175,7 +176,8 @@
                 roleSettings: { wolf: 1, seer: 1, witch: 1, knight: 0, ghostRider: 0, villager: 0 },
                 nightStartTime: 0, speakerStartTime: 0, speechOrder: [], currentSpeakerIndex: 0, dayStartTime: 0, voteStartTime: 0,
                 nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null, ghostRiderAction: null }, daySkips: {}, dayVotes: {},
-                systemMessage: "等待玩家加入中..."
+                systemMessage: "等待玩家加入中...",
+                globalChat: [], wolfChat: []
             });
             roomId = newRoomId; listenToRoom(roomId);
         };
@@ -285,7 +287,8 @@
                     nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null, ghostRiderAction: null },
                     daySkips: {}, 
                     dayVotes: {}, 
-                    systemMessage: "天黑請閉眼，夜晚行動開始..."
+                    systemMessage: "天黑請閉眼，夜晚行動開始...",
+                    wolfChat: [] // Clear wolf chat for new game
                 });
             } catch (error) {
                 console.error("Start Game Error:", error);
@@ -468,6 +471,34 @@
         };
 
         window.copyCode = () => { navigator.clipboard.writeText(roomId); alert("已複製房間代碼！"); };
+        
+        window.switchChatTab = (tab) => {
+            activeChatTab = tab;
+            render();
+        };
+
+        window.sendChatMessage = async () => {
+            const input = document.getElementById('chatInput');
+            const msgText = input.value.trim();
+            if (!msgText || !roomData || !user) return;
+            
+            const chatKey = activeChatTab === 'global' ? 'globalChat' : 'wolfChat';
+            const msgObj = {
+                senderId: user.uid,
+                senderName: roomData.players[user.uid]?.name || "玩家",
+                text: msgText,
+                timestamp: Date.now()
+            };
+            
+            try {
+                input.value = '';
+                await updateDoc(doc(db, "rooms", roomId), {
+                    [chatKey]: arrayUnion(msgObj)
+                });
+            } catch (err) {
+                console.error("發送訊息失敗:", err);
+            }
+        };
 
         function render() {
             const appDiv = document.getElementById('app');
@@ -572,6 +603,35 @@
             if(roomData.phase === 'day_free') phaseText = `☀️ 自由討論 (${Math.max(0, 60 - Math.floor((now - roomData.dayStartTime) / 1000))}s)`;
             if(roomData.phase === 'vote') phaseText = `🗳️ 投票階段 (${Math.max(0, 25 - Math.floor((now - roomData.voteStartTime) / 1000))}s)`;
             if(roomData.phase === 'game_over') phaseText = '🏆 遊戲結束';
+
+            // --- Chat System Integration ---
+            const isWolfTeam = myData.role === '狼人' || myData.role === '惡靈騎士';
+            if (!isWolfTeam && activeChatTab === 'wolf') activeChatTab = 'global'; 
+
+            const chatMessages = activeChatTab === 'global' ? (roomData.globalChat || []) : (roomData.wolfChat || []);
+            
+            const chatHtml = `
+            <div class="bg-slate-800 rounded-xl border border-slate-700 mb-6 shadow-lg flex flex-col h-64">
+                <div class="flex border-b border-slate-700">
+                    <button onclick="window.switchChatTab('global')" class="flex-1 py-2 font-bold ${activeChatTab === 'global' ? 'bg-slate-700 text-indigo-400' : 'text-slate-400 hover:bg-slate-700/50'} rounded-tl-xl transition">所有人頻道</button>
+                    ${isWolfTeam ? `<button onclick="window.switchChatTab('wolf')" class="flex-1 py-2 font-bold ${activeChatTab === 'wolf' ? 'bg-slate-700 text-red-400' : 'text-slate-400 hover:bg-slate-700/50'} rounded-tr-xl transition">狼人頻道</button>` : ''}
+                </div>
+                <div id="chatBox" class="flex-1 p-3 overflow-y-auto flex flex-col gap-2 text-sm text-left">
+                    ${chatMessages.length === 0 ? '<p class="text-slate-500 text-center mt-2">暫無訊息</p>' : ''}
+                    ${chatMessages.map(msg => `
+                        <div class="${msg.senderId === user.uid ? 'self-end bg-indigo-600' : 'self-start bg-slate-700'} px-3 py-2 rounded-lg max-w-[80%]">
+                            <span class="text-xs ${msg.senderId === user.uid ? 'text-indigo-200' : 'text-slate-400'} font-bold mb-1 block">${msg.senderName}</span>
+                            <span class="text-white break-words">${msg.text}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="p-2 border-t border-slate-700 flex gap-2">
+                    <input id="chatInput" type="text" class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-1 text-sm outline-none focus:ring-1 focus:ring-indigo-500 text-white" placeholder="${activeChatTab === 'global' ? '向所有人發送...' : '向狼人陣營發送...'}" onkeydown="if(event.key === 'Enter') window.sendChatMessage()">
+                    <button onclick="window.sendChatMessage()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-1 rounded-lg text-sm font-bold transition">傳送</button>
+                </div>
+            </div>
+            `;
+            // -------------------------------
 
             let roleSetupUI = '';
             if (roomData.phase === 'lobby') {
@@ -728,6 +788,7 @@
 
             appDiv.innerHTML = `
                 ${profileModalUI}
+                <!-- HEADER (Where IMG_0171.jpeg references) -->
                 <div class="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700 mb-6 shadow-lg">
                     <div>
                         <h2 class="text-xl font-bold flex items-center gap-2">代碼：<span class="text-indigo-400 tracking-widest">${roomId}</span><button onclick="window.copyCode()" class="text-slate-400 hover:text-white ml-2 text-sm">📋複製</button></h2>
@@ -740,6 +801,9 @@
                     </div>
                     <div class="text-right"><span class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span></div>
                 </div>
+
+                <!-- NEW CHAT SECTION ADDED HERE -->
+                ${chatHtml}
 
                 <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 mb-6 text-center shadow-lg">
                     <p class="text-lg md:text-xl text-slate-300 whitespace-pre-line">${roomData.systemMessage}</p>
@@ -759,6 +823,12 @@
 
                 ${isHost ? `<div class="bg-slate-800 p-4 rounded-xl border border-indigo-500/30 flex justify-center items-center gap-4 flex-wrap"><span class="text-lg hidden md:block">👑 房主控制：</span>${hostControls}</div>` : ''}
             `;
+
+            // Auto-scroll chat box to bottom
+            setTimeout(() => {
+                const chatBox = document.getElementById('chatBox');
+                if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
+            }, 10);
         }
     </script>
 </body>
