@@ -13,7 +13,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
         const firebaseConfig = {
@@ -47,7 +47,8 @@
         onAuthStateChanged(auth, (currentUser) => {
             user = currentUser;
             isAuthChecking = false;
-            if (user && !playerName) playerName = user.displayName || "";
+            playerName = localStorage.getItem('werewolf_name') || (user ? user.displayName : "") || "";
+            selectedIcon = localStorage.getItem('werewolf_icon') || "👤";
             render();
         });
 
@@ -109,6 +110,10 @@
             const newName = document.getElementById('editPlayerName').value;
             if (!newName.trim()) return alert("請輸入暱稱！");
             playerName = newName;
+            
+            localStorage.setItem('werewolf_name', playerName);
+            localStorage.setItem('werewolf_icon', selectedIcon);
+
             if (roomId && roomData && roomData.players[user.uid]) {
                 const roomRef = doc(db, "rooms", roomId);
                 await updateDoc(roomRef, { [`players.${user.uid}.name`]: newName, [`players.${user.uid}.icon`]: selectedIcon });
@@ -196,10 +201,17 @@
 
         window.updateRoleSetting = async (role, delta) => {
             if (roomData.phase !== 'lobby' || roomData.hostId !== user.uid) return;
-            const currentSettings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
+            
+            const roomRef = doc(db, "rooms", roomId);
+            const docSnap = await getDoc(roomRef);
+            if (!docSnap.exists()) return;
+            
+            const latestData = docSnap.data();
+            const currentSettings = latestData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
             const newValue = Math.max(0, (currentSettings[role] || 0) + delta);
+            
             const newSettings = { ...currentSettings, [role]: newValue };
-            await updateDoc(doc(db, "rooms", roomId), { roleSettings: newSettings });
+            await updateDoc(roomRef, { roleSettings: newSettings });
         };
 
         window.startGame = async () => {
