@@ -166,7 +166,7 @@
             }
             if(roomData.phase === 'last_words') {
                 const elapsed = Math.max(0, Math.floor((now - roomData.lastWordsStartTime) / 1000));
-                phaseText = `⏳ 遺言時間 (${Math.max(0, 10 - elapsed)}s)`;
+                phaseText = `⏳ 遺言時間 (${Math.max(0, 20 - elapsed)}s)`;
             }
             if(roomData.phase === 'day_speech') {
                 const elapsed = Math.max(0, Math.floor((now - roomData.speakerStartTime) / 1000));
@@ -192,7 +192,7 @@
                 else window.updateTimerDisplay();
             } else if (roomData.phase === 'last_words') {
                 const elapsed = Math.floor((now - roomData.lastWordsStartTime) / 1000);
-                if ((elapsed >= 10 && isHost) || elapsed >= 12) window.endLastWords();
+                if ((elapsed >= 20 && isHost) || elapsed >= 22) window.endLastWords();
                 else window.updateTimerDisplay();
             } else if (roomData.phase === 'day_speech') {
                 const elapsed = Math.floor((now - roomData.speakerStartTime) / 1000);
@@ -531,6 +531,7 @@
             let { wolfVotes, witchSave, witchPoisonTarget, seerTarget, ghostRiderAction } = roomData.nightActions || {};
             const newPlayers = JSON.parse(JSON.stringify(roomData.players));
             let deaths = [];
+            let wolfKilledTarget = null;
 
             const aliveWolfIds = Object.keys(newPlayers).filter(id => (newPlayers[id].role === '狼人' || newPlayers[id].role === '惡靈騎士') && newPlayers[id].isAlive);
             const wolfTally = {};
@@ -581,6 +582,7 @@
                 } else {
                     newPlayers[wolfTarget].isAlive = false; 
                     deaths.push(newPlayers[wolfTarget].name);
+                    wolfKilledTarget = wolfTarget;
                 }
             }
             if (witchPoisonTarget) {
@@ -588,6 +590,11 @@
                 if (witchId) newPlayers[witchId].hasPoison = false;
                 newPlayers[witchPoisonTarget].isAlive = false;
                 if (!deaths.includes(newPlayers[witchPoisonTarget].name)) deaths.push(newPlayers[witchPoisonTarget].name);
+            }
+
+            // Player killed by wolf gets no last words
+            if (wolfKilledTarget) {
+                newPlayers[wolfKilledTarget].hasLeftLastWords = true;
             }
 
             let msg = deaths.length === 0 ? "昨晚是個平安夜。" : `昨晚死亡的玩家：${deaths.join('、 ')}。`;
@@ -601,14 +608,17 @@
                 const aliveIds = Object.keys(newPlayers).filter(id => newPlayers[id].isAlive);
                 const shuffledSpeechOrder = [...aliveIds].sort(() => 0.5 - Math.random());
                 
-                if (deaths.length > 0) {
+                // If there are night deaths AND not all deaths were from wolf attacks, give last words
+                const hasEligibleLastWords = deaths.length > 0 && (!wolfKilledTarget || deaths.length > 1);
+
+                if (hasEligibleLastWords) {
                     await updateDoc(roomRef, {
                         players: newPlayers, 
                         phase: "last_words", 
                         lastWordsStartTime: Date.now(),
                         nextPhase: "day_speech",
                         nextPhaseData: { speechOrder: shuffledSpeechOrder, currentSpeakerIndex: 0, daySkips: {}, dayVotes: {} },
-                        systemMessage: `${msg}\n現在有 10 秒鐘的遺言時間。`
+                        systemMessage: `${msg}\n現在有 20 秒鐘的遺言時間。`
                     });
                 } else {
                     await updateDoc(roomRef, {
@@ -673,7 +683,7 @@
                         lastWordsStartTime: Date.now(), 
                         nextPhase: "night",
                         nextPhaseData: { nightActions: nightActionsReset },
-                        systemMessage: `${resultMsg}\n現在有 10 秒鐘的遺言時間。` 
+                        systemMessage: `${resultMsg}\n現在有 20 秒鐘的遺言時間。` 
                     });
                 } else {
                     await updateDoc(roomRef, { 
@@ -1002,7 +1012,7 @@
             }
             if(roomData.phase === 'last_words') {
                 const elapsed = Math.max(0, Math.floor((now - roomData.lastWordsStartTime) / 1000));
-                phaseText = `⏳ 遺言時間 (${Math.max(0, 10 - elapsed)}s)`;
+                phaseText = `⏳ 遺言時間 (${Math.max(0, 20 - elapsed)}s)`;
             }
             if(roomData.phase === 'day_speech') {
                 const elapsed = Math.max(0, Math.floor((now - roomData.speakerStartTime) / 1000));
