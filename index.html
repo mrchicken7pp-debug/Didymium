@@ -42,7 +42,7 @@
 
         let showProfileModal = false;
         let selectedIcon = localStorage.getItem("werewolf_playerIcon") || "👤"; 
-        const availableIcons = ["👤", "⚔️", "🐺", "🧙‍♀️", "🔮", "👦", "👧", "🤡", "👻", "👽", "🤖", "🐱", "🐶"];
+        const availableIcons = ["👤", "⚔️", "🐺", "🧙‍♀️", "🔮", "👦", "👧", "🤡", "👻", "👽", "🤖", "🐱", "🐶", "💀"];
 
         onAuthStateChanged(auth, (currentUser) => {
             user = currentUser;
@@ -137,7 +137,7 @@
 
             if (roomData.phase === 'night') {
                 const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
-                if ((elapsed >= 45 && isHost) || elapsed >= 47) window.endNight();
+                if ((elapsed >= 60 && isHost) || elapsed >= 62) window.endNight();
                 else render();
             } else if (roomData.phase === 'day_speech') {
                 const elapsed = Math.floor((now - roomData.speakerStartTime) / 1000);
@@ -172,9 +172,9 @@
             await setDoc(doc(db, "rooms", newRoomId), {
                 hostId: user.uid, phase: "lobby",
                 players: { [user.uid]: { name: playerName, icon: selectedIcon, isAlive: true, role: null } },
-                roleSettings: { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 },
+                roleSettings: { wolf: 1, seer: 1, witch: 1, knight: 0, ghostRider: 0, villager: 0 },
                 nightStartTime: 0, speakerStartTime: 0, speechOrder: [], currentSpeakerIndex: 0, dayStartTime: 0, voteStartTime: 0,
-                nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null }, daySkips: {}, dayVotes: {},
+                nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null, ghostRiderAction: null }, daySkips: {}, dayVotes: {},
                 systemMessage: "等待玩家加入中..."
             });
             roomId = newRoomId; listenToRoom(roomId);
@@ -213,7 +213,6 @@
                 isTransitioning = false;
                 if (docSnap.exists()) { 
                     roomData = docSnap.data(); 
-                    console.log("Room Data Synced:", roomData.phase);
                     render(); 
                 } 
                 else { showError("房間不存在"); roomId = null; roomData = null; render(); }
@@ -225,7 +224,7 @@
 
         window.updateRoleSetting = async (role, delta) => {
             if (roomData.phase !== 'lobby' || roomData.hostId !== user.uid) return;
-            const currentSettings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
+            const currentSettings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, ghostRider: 0, villager: 0 };
             const newValue = Math.max(0, (currentSettings[role] || 0) + delta);
             await updateDoc(doc(db, "rooms", roomId), { [`roleSettings.${role}`]: newValue });
         };
@@ -233,8 +232,8 @@
         window.startGame = async () => {
             try {
                 const playerIds = Object.keys(roomData.players);
-                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
-                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.villager || 0);
+                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, ghostRider: 0, villager: 0 };
+                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.ghostRider || 0) + (settings.villager || 0);
                 
                 if (totalRoles !== playerIds.length) {
                     alert(`⚠️ 無法開始遊戲！\n當前玩家人數：${playerIds.length} 人\n設定的角色總數：${totalRoles} 個\n請增加玩家或調整角色數量，使兩者一致。`);
@@ -243,6 +242,7 @@
 
                 let rolePool = [];
                 for (let i = 0; i < (settings.wolf || 0); i++) rolePool.push("狼人");
+                for (let i = 0; i < (settings.ghostRider || 0); i++) rolePool.push("惡靈騎士");
                 for (let i = 0; i < (settings.seer || 0); i++) rolePool.push("預言家");
                 for (let i = 0; i < (settings.witch || 0); i++) rolePool.push("女巫");
                 for (let i = 0; i < (settings.knight || 0); i++) rolePool.push("騎士");
@@ -271,16 +271,21 @@
                     } else { 
                         delete newPlayers[id].hasKnightAbility; 
                     }
+                    if (assignedRole === "惡靈騎士") {
+                        newPlayers[id].hasGhostRiderAbility = true;
+                    } else {
+                        delete newPlayers[id].hasGhostRiderAbility;
+                    }
                 });
 
                 await updateDoc(doc(db, "rooms", roomId), {
                     players: newPlayers, 
                     phase: "night", 
                     nightStartTime: Date.now(),
-                    nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null },
+                    nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null, ghostRiderAction: null },
                     daySkips: {}, 
                     dayVotes: {}, 
-                    systemMessage: "天黑請閉眼，45 秒夜晚行動開始..."
+                    systemMessage: "天黑請閉眼，夜晚行動開始..."
                 });
             } catch (error) {
                 console.error("Start Game Error:", error);
@@ -302,10 +307,10 @@
         window.handleSeerAction = async (targetId) => {
             if (roomData.nightActions?.seerTarget) return alert("今晚已查驗過！");
             await updateDoc(doc(db, "rooms", roomId), { "nightActions.seerTarget": targetId });
-            alert(`查驗結果：${roomData.players[targetId].name} 是 ${roomData.players[targetId].role === "狼人" ? "壞人" : "好人"}`);
         };
         window.handleWitchHeal = async (useSave) => await updateDoc(doc(db, "rooms", roomId), { "nightActions.witchSave": useSave });
         window.handleWitchPoison = async (targetId) => await updateDoc(doc(db, "rooms", roomId), { "nightActions.witchPoisonTarget": targetId });
+        window.handleGhostRiderAction = async (actionType) => await updateDoc(doc(db, "rooms", roomId), { "nightActions.ghostRiderAction": actionType });
 
         window.handleKnightDuel = async (targetId) => {
             if (!roomData || isTransitioning) return;
@@ -322,18 +327,18 @@
             newPlayers[user.uid].hasKnightAbility = false;
 
             let duelMsg = "";
-            const isTargetWolf = targetPlayer.role === "狼人";
+            const isTargetWolf = targetPlayer.role === "狼人" || targetPlayer.role === "惡靈騎士";
 
             if (isTargetWolf) {
                 newPlayers[targetId].isAlive = false;
-                duelMsg = `⚔️ 騎士【${myPlayer.name}】發動決鬥！\n【${targetPlayer.name}】是狼人，當場死亡！`;
+                duelMsg = `⚔️ 騎士【${myPlayer.name}】發動決鬥！\n【${targetPlayer.name}】是壞人，當場死亡！`;
             } else {
                 newPlayers[user.uid].isAlive = false;
                 duelMsg = `⚔️ 騎士【${myPlayer.name}】發動決鬥！\n【${targetPlayer.name}】是好人，騎士【${myPlayer.name}】以死謝罪身亡！`;
             }
 
             const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
-            const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
+            const aliveWolves = alivePlayers.filter(p => p.role === "狼人" || p.role === "惡靈騎士").length;
             const roomRef = doc(db, "rooms", roomId);
 
             if (aliveWolves === 0) {
@@ -378,16 +383,35 @@
         window.endNight = async () => {
             if (roomData.phase !== "night" || isTransitioning) return;
             isTransitioning = true;
-            const { wolfTarget, witchSave, witchPoisonTarget } = roomData.nightActions;
+            let { wolfTarget, witchSave, witchPoisonTarget, seerTarget, ghostRiderAction } = roomData.nightActions;
             const newPlayers = JSON.parse(JSON.stringify(roomData.players));
             let deaths = [];
+
+            // Process Ghost Rider logic first
+            const grId = Object.keys(newPlayers).find(id => newPlayers[id].role === '惡靈騎士');
+            if (grId && ghostRiderAction) {
+                newPlayers[grId].hasGhostRiderAbility = false;
+                if (ghostRiderAction === 'reflect' && witchPoisonTarget === grId) {
+                    const witchId = Object.keys(newPlayers).find(id => newPlayers[id].role === '女巫');
+                    if (witchId) witchPoisonTarget = witchId; // Redirect poison to witch
+                }
+            }
+
+            // Generate Seer result for the next day
+            const seerId = Object.keys(newPlayers).find(id => newPlayers[id].role === '預言家');
+            if (seerId && seerTarget) {
+                let isBad = (newPlayers[seerTarget].role === "狼人" || newPlayers[seerTarget].role === "惡靈騎士");
+                if (seerTarget === grId && ghostRiderAction === 'false_identity') isBad = false;
+                newPlayers[seerId].lastSeerResult = `昨晚查驗結果：${newPlayers[seerTarget].name} 是 ${isBad ? '壞人' : '好人'}`;
+            }
 
             if (wolfTarget) {
                 if (witchSave) {
                     const witchId = Object.keys(newPlayers).find(id => newPlayers[id].role === '女巫');
                     if (witchId) newPlayers[witchId].hasHeal = false;
                 } else {
-                    newPlayers[wolfTarget].isAlive = false; deaths.push(newPlayers[wolfTarget].name);
+                    newPlayers[wolfTarget].isAlive = false; 
+                    deaths.push(newPlayers[wolfTarget].name);
                 }
             }
             if (witchPoisonTarget) {
@@ -399,7 +423,7 @@
 
             let msg = deaths.length === 0 ? "昨晚是個平安夜。" : `昨晚死亡的玩家：${deaths.join('、 ')}。`;
             const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
-            const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
+            const aliveWolves = alivePlayers.filter(p => p.role === "狼人" || p.role === "惡靈騎士").length;
             const roomRef = doc(db, "rooms", roomId);
 
             if (aliveWolves === 0) await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${msg}\n🎉 好人陣營獲勝！` });
@@ -435,12 +459,12 @@
             }
 
             const alivePlayers = Object.values(newPlayers).filter(p => p.isAlive);
-            const aliveWolves = alivePlayers.filter(p => p.role === "狼人").length;
+            const aliveWolves = alivePlayers.filter(p => p.role === "狼人" || p.role === "惡靈騎士").length;
             const roomRef = doc(db, "rooms", roomId);
 
             if (aliveWolves === 0) await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${resultMsg}\n🎉 好人陣營獲勝！` });
             else if (aliveWolves >= (alivePlayers.length - aliveWolves)) await updateDoc(roomRef, { players: newPlayers, phase: "game_over", systemMessage: `${resultMsg}\n🐺 狼人陣營獲勝！` });
-            else await updateDoc(roomRef, { players: newPlayers, phase: "night", nightStartTime: Date.now(), nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null }, systemMessage: `${resultMsg} 天黑請閉眼...` });
+            else await updateDoc(roomRef, { players: newPlayers, phase: "night", nightStartTime: Date.now(), nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null, ghostRiderAction: null }, systemMessage: `${resultMsg} 天黑請閉眼...` });
         };
 
         window.copyCode = () => { navigator.clipboard.writeText(roomId); alert("已複製房間代碼！"); };
@@ -538,7 +562,8 @@
                 const elapsed = Math.max(0, Math.floor((now - roomData.nightStartTime) / 1000));
                 if (elapsed < 15) phaseText = `🌙 狼人 (${Math.max(0, 15 - elapsed)}s)`;
                 else if (elapsed < 30) phaseText = `🔮 預言家 (${Math.max(0, 30 - elapsed)}s)`;
-                else phaseText = `🧪 女巫 (${Math.max(0, 45 - elapsed)}s)`;
+                else if (elapsed < 45) phaseText = `🧪 女巫 (${Math.max(0, 45 - elapsed)}s)`;
+                else phaseText = `💀 惡靈騎士 (${Math.max(0, 60 - elapsed)}s)`;
             }
             if(roomData.phase === 'day_speech') {
                 const elapsed = Math.max(0, Math.floor((now - roomData.speakerStartTime) / 1000));
@@ -550,8 +575,8 @@
 
             let roleSetupUI = '';
             if (roomData.phase === 'lobby') {
-                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
-                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.villager || 0);
+                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, ghostRider: 0, villager: 0 };
+                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.ghostRider || 0) + (settings.villager || 0);
                 roleSetupUI = `
                     <div class="bg-slate-700/80 p-5 rounded-xl mt-4 mb-2 border border-slate-600 text-left">
                         <h3 class="text-lg font-bold text-amber-400 mb-3 flex justify-between items-center">
@@ -559,8 +584,8 @@
                             <span class="text-sm text-slate-300">角色總數: <span class="${totalRoles === allPlayers.length ? 'text-green-400' : 'text-red-400'} font-bold text-lg">${totalRoles}</span> / 玩家人數: <span class="font-bold text-lg">${allPlayers.length}</span></span>
                         </h3>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            ${['wolf', 'seer', 'witch', 'knight', 'villager'].map(role => {
-                                const labels = { wolf: '🐺 狼人', seer: '🔮 預言家', witch: '🧪 女巫', knight: '⚔️ 騎士', villager: '🧑‍🌾 平民' };
+                            ${['wolf', 'ghostRider', 'seer', 'witch', 'knight', 'villager'].map(role => {
+                                const labels = { wolf: '🐺 狼人', ghostRider: '💀 惡靈騎士', seer: '🔮 預言家', witch: '🧪 女巫', knight: '⚔️ 騎士', villager: '🧑‍🌾 平民' };
                                 return `<div class="flex justify-between items-center bg-slate-800 p-3 rounded-lg border border-slate-700">
                                     <span class="font-bold">${labels[role]}</span>
                                     <div class="flex items-center gap-3">
@@ -590,7 +615,7 @@
                 if (myData.isAlive && player.isAlive) {
                     if (roomData.phase === 'night') {
                         const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
-                        if (elapsed < 15 && myData.role === '狼人' && id !== user.uid) {
+                        if (elapsed < 15 && (myData.role === '狼人' || myData.role === '惡靈騎士') && id !== user.uid) {
                             let isSelected = roomData.nightActions?.wolfTarget === id;
                             actionBtn = `<button onclick="window.handleWolfAction('${id}')" class="text-xs ${isSelected ? 'bg-green-600' : 'bg-red-600 hover:bg-red-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '✓ 已鎖定' : '襲擊'}</button>`;
                         }
@@ -600,7 +625,7 @@
                             if (hasChecked) actionBtn = `<button disabled class="text-xs ${isSelected ? 'bg-green-600/70 text-slate-100' : 'bg-slate-700/50 text-slate-500'} px-3 py-1 rounded-full mt-2 w-full cursor-not-allowed">${isSelected ? '✓ 已查驗' : '查驗'}</button>`;
                             else actionBtn = `<button onclick="window.handleSeerAction('${id}')" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded-full mt-2 w-full">查驗</button>`;
                         }
-                        if (elapsed >= 30 && myData.role === '女巫' && myData.hasPoison && id !== user.uid) {
+                        if (elapsed >= 30 && elapsed < 45 && myData.role === '女巫' && myData.hasPoison && id !== user.uid) {
                             let isSelected = roomData.nightActions?.witchPoisonTarget === id;
                             actionBtn = `<button onclick="window.handleWitchPoison('${id}')" class="text-xs ${isSelected ? 'bg-purple-800' : 'bg-purple-600 hover:bg-purple-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '☠ 已毒殺' : '使用毒藥'}</button>`;
                         }
@@ -651,15 +676,42 @@
             let knightPanel = myData.role === '騎士' && myData.isAlive && roomData.phase !== 'lobby' && roomData.phase !== 'night' ? `
                 <div class="mt-4 p-3 bg-amber-900/40 border border-amber-500/60 rounded-lg text-left">
                     <p class="text-amber-300 font-bold text-sm">⚔️ 騎士專屬面板：</p>
-                    <p class="text-xs text-slate-300 mt-1">${myData.hasKnightAbility ? '在發言、討論或投票階段，你點擊任意玩家卡片的「⚔️ 決鬥」即可發動技能。若對方是狼人則狼人死亡；若對方是好人則你自己以死謝罪！' : '你的騎士決鬥技能本局已使用過。'}</p>
+                    <p class="text-xs text-slate-300 mt-1">${myData.hasKnightAbility ? '在發言、討論或投票階段，你點擊任意玩家卡片的「⚔️ 決鬥」即可發動技能。若對方是壞人則壞人死亡；若對方是好人則你自己以死謝罪！' : '你的騎士決鬥技能本局已使用過。'}</p>
                 </div>
             ` : '';
+
+            let seerResultPanel = myData.role === '預言家' && myData.lastSeerResult && roomData.phase !== 'lobby' && roomData.phase !== 'night' ? `
+                <div class="mt-4 p-3 bg-indigo-900/40 border border-indigo-500/60 rounded-lg text-left">
+                    <p class="text-indigo-300 font-bold text-sm">🔮 查驗回報：</p>
+                    <p class="text-white text-sm mt-1">${myData.lastSeerResult}</p>
+                </div>
+            ` : '';
+
+            let grPhasePanel = '';
+            if (roomData.phase === 'night' && myData.role === '惡靈騎士' && myData.isAlive && Math.floor((now - roomData.nightStartTime) / 1000) >= 45) {
+                const isPoisoned = roomData.nightActions?.witchPoisonTarget === user.uid;
+                const isSeeked = roomData.nightActions?.seerTarget === user.uid;
+                const used = roomData.nightActions?.ghostRiderAction;
+
+                grPhasePanel = `
+                <div class="mt-4 p-4 bg-slate-900/60 border border-slate-500 rounded-lg text-left">
+                    <p class="text-slate-300 font-bold mb-2">💀 惡靈騎士面板：</p>
+                    ${!myData.hasGhostRiderAbility ? '<p class="text-sm text-slate-500">技能本局已使用過。</p>' : 
+                        (!isPoisoned && !isSeeked ? '<p class="text-sm text-slate-400">今晚未被預言家查驗或女巫毒殺，無事發生。</p>' : `
+                        <div class="flex gap-2 flex-wrap">
+                            ${isPoisoned ? `<button onclick="window.handleGhostRiderAction('reflect')" class="text-xs ${used === 'reflect' ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-500'} px-3 py-2 rounded-lg font-bold">${used === 'reflect' ? '✓ 已反彈' : '🔁 反彈毒藥 (女巫死)'}</button>` : ''}
+                            ${isSeeked ? `<button onclick="window.handleGhostRiderAction('false_identity')" class="text-xs ${used === 'false_identity' ? 'bg-green-600' : 'bg-indigo-600 hover:bg-indigo-500'} px-3 py-2 rounded-lg font-bold">${used === 'false_identity' ? '✓ 已偽裝' : '🎭 偽裝好人'}</button>` : ''}
+                        </div>
+                        <p class="text-xs text-amber-400 mt-2">注意：技能整場遊戲只能選擇使用一次，點擊後即鎖定並消耗！</p>
+                    `)}
+                </div>`;
+            }
 
             let hostControls = '';
             if(isHost) {
                 if (roomData.phase === 'lobby') {
-                    const s = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
-                    const isReady = (s.wolf + s.seer + s.witch + (s.knight || 0) + s.villager) === allPlayers.length;
+                    const s = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, ghostRider: 0, villager: 0 };
+                    const isReady = (s.wolf + s.seer + s.witch + (s.knight || 0) + (s.ghostRider || 0) + s.villager) === allPlayers.length;
                     hostControls = `<button onclick="window.startGame()" class="${isReady ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-600 cursor-not-allowed opacity-50'} px-6 py-2 rounded-lg font-bold">▶ 開始遊戲</button>`;
                 }
                 if (roomData.phase === 'night') hostControls = `<button onclick="window.endNight()" class="bg-orange-600 hover:bg-orange-500 px-6 py-2 rounded-lg font-bold">☀ 天亮了</button>`;
@@ -671,7 +723,7 @@
 
             let roleUI = roomData.phase !== 'lobby' ? `<div class="mt-4 p-4 bg-slate-700 inline-block rounded-lg border border-slate-600">
                 <p class="text-sm text-slate-400 mb-1">你的身分</p>
-                <p class="text-2xl font-bold ${myData.role === '狼人' ? 'text-red-400' : (myData.role === '女巫' ? 'text-purple-400' : (myData.role === '預言家' ? 'text-indigo-400' : (myData.role === '騎士' ? 'text-amber-400' : 'text-blue-400')))}">${myData.role}${!myData.isAlive ? ' (已死亡)' : ''}</p>
+                <p class="text-2xl font-bold ${myData.role === '狼人' || myData.role === '惡靈騎士' ? 'text-red-400' : (myData.role === '女巫' ? 'text-purple-400' : (myData.role === '預言家' ? 'text-indigo-400' : (myData.role === '騎士' ? 'text-amber-400' : 'text-blue-400')))}">${myData.role}${!myData.isAlive ? ' (已死亡)' : ''}</p>
             </div>` : '';
 
             appDiv.innerHTML = `
@@ -695,6 +747,8 @@
                     ${roleUI}
                     ${witchSpecialPanel}
                     ${knightPanel}
+                    ${seerResultPanel}
+                    ${grPhasePanel}
                     ${speechControlPanel}
                     ${daySkipPanel}
                 </div>
