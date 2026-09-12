@@ -70,7 +70,7 @@
 
         window.openProfileEditor = () => {
             showProfileModal = true;
-            const myData = roomData?.players[user.uid];
+            const myData = roomData?.players[user?.uid];
             if (myData && myData.icon) selectedIcon = myData.icon;
             render();
         };
@@ -193,6 +193,19 @@
             } catch (err) { showError("無法加入房間"); }
         };
 
+        window.leaveRoom = async () => {
+            if (!roomId || !user) return;
+            try {
+                const roomRef = doc(db, "rooms", roomId);
+                localStorage.setItem("werewolf_playerName", playerName);
+                localStorage.setItem("werewolf_playerIcon", selectedIcon);
+                await updateDoc(roomRef, { [`players.${user.uid}`]: null });
+                if (unsubscribeRoom) unsubscribeRoom();
+                roomId = null; roomData = null;
+                render();
+            } catch (err) { alert("離開房間時發生錯誤：" + err.message); }
+        };
+
         let unsubscribeRoom = null;
         function listenToRoom(id) {
             if (unsubscribeRoom) unsubscribeRoom();
@@ -211,41 +224,67 @@
         };
 
         window.startGame = async () => {
-            const playerIds = Object.keys(roomData.players);
-            const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
-            const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.villager || 0);
-            if (totalRoles !== playerIds.length) return showError(`角色數量 (${totalRoles}) 與玩家人數 (${playerIds.length}) 不符！`);
+            try {
+                const playerIds = Object.keys(roomData.players);
+                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, knight: 0, villager: 0 };
+                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.knight || 0) + (settings.villager || 0);
+                
+                if (totalRoles !== playerIds.length) {
+                    alert(`⚠️ 無法開始遊戲！\n當前玩家人數：${playerIds.length} 人\n設定的角色總數：${totalRoles} 個\n請增加玩家或調整角色數量，使兩者一致。`);
+                    return showError(`角色數量 (${totalRoles}) 與玩家人數 (${playerIds.length}) 不符！`);
+                }
 
-            let rolePool = [];
-            for (let i = 0; i < (settings.wolf || 0); i++) rolePool.push("狼人");
-            for (let i = 0; i < (settings.seer || 0); i++) rolePool.push("預言家");
-            for (let i = 0; i < (settings.witch || 0); i++) rolePool.push("女巫");
-            for (let i = 0; i < (settings.knight || 0); i++) rolePool.push("騎士");
-            for (let i = 0; i < (settings.villager || 0); i++) rolePool.push("平民");
-            rolePool.sort(() => 0.5 - Math.random());
+                let rolePool = [];
+                for (let i = 0; i < (settings.wolf || 0); i++) rolePool.push("狼人");
+                for (let i = 0; i < (settings.seer || 0); i++) rolePool.push("預言家");
+                for (let i = 0; i < (settings.witch || 0); i++) rolePool.push("女巫");
+                for (let i = 0; i < (settings.knight || 0); i++) rolePool.push("騎士");
+                for (let i = 0; i < (settings.villager || 0); i++) rolePool.push("平民");
+                
+                for (let i = rolePool.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [rolePool[i], rolePool[j]] = [rolePool[j], rolePool[i]];
+                }
 
-            const newPlayers = { ...roomData.players };
-            playerIds.forEach((id, index) => {
-                const assignedRole = rolePool[index];
-                newPlayers[id].role = assignedRole;
-                newPlayers[id].isAlive = true;
-                if (assignedRole === "女巫") { newPlayers[id].hasHeal = true; newPlayers[id].hasPoison = true; }
-                else { delete newPlayers[id].hasHeal; delete newPlayers[id].hasPoison; }
-                if (assignedRole === "騎士") { newPlayers[id].hasKnightAbility = true; }
-                else { delete newPlayers[id].hasKnightAbility; }
-            });
+                const newPlayers = JSON.parse(JSON.stringify(roomData.players));
+                
+                playerIds.forEach((id, index) => {
+                    const assignedRole = rolePool[index];
+                    newPlayers[id].role = assignedRole;
+                    newPlayers[id].isAlive = true;
+                    if (assignedRole === "女巫") { 
+                        newPlayers[id].hasHeal = true; 
+                        newPlayers[id].hasPoison = true; 
+                    } else { 
+                        delete newPlayers[id].hasHeal; 
+                        delete newPlayers[id].hasPoison; 
+                    }
+                    if (assignedRole === "騎士") { 
+                        newPlayers[id].hasKnightAbility = true; 
+                    } else { 
+                        delete newPlayers[id].hasKnightAbility; 
+                    }
+                });
 
-            await updateDoc(doc(db, "rooms", roomId), {
-                players: newPlayers, phase: "night", nightStartTime: Date.now(),
-                nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null },
-                daySkips: {}, dayVotes: {}, systemMessage: "天黑請閉眼，45 秒夜晚行動開始..."
-            });
+                await updateDoc(doc(db, "rooms", roomId), {
+                    players: newPlayers, 
+                    phase: "night", 
+                    nightStartTime: Date.now(),
+                    nightActions: { wolfTarget: null, seerTarget: null, witchSave: false, witchPoisonTarget: null },
+                    daySkips: {}, 
+                    dayVotes: {}, 
+                    systemMessage: "天黑請閉眼，45 秒夜晚行動開始..."
+                });
+            } catch (error) {
+                console.error("Start Game Error:", error);
+                alert("開始遊戲時發生錯誤：" + error.message);
+            }
         };
 
         window.returnToLobby = async () => {
             if (roomData.phase !== 'game_over' || roomData.hostId !== user.uid || isTransitioning) return;
             isTransitioning = true;
-            const newPlayers = { ...roomData.players };
+            const newPlayers = JSON.parse(JSON.stringify(roomData.players));
             Object.keys(newPlayers).forEach(id => { newPlayers[id].isAlive = true; newPlayers[id].role = null; });
             await updateDoc(doc(db, "rooms", roomId), {
                 phase: "lobby", players: newPlayers, systemMessage: "等待房主重新開始遊戲..."
