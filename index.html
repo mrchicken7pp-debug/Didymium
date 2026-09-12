@@ -16,7 +16,7 @@
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, deleteField } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
-        // 💡 Increment version to update client cache
+        // Increment version to update client cache if needed
         const CURRENT_VERSION = 4; 
 
         const firebaseConfig = {
@@ -44,11 +44,14 @@
         let isAuthChecking = true;
         let activeChatTab = 'global'; 
         
+        // Modal states
+        let showProfileModal = false;
+        let showRoleGuideModal = false;
+
         // Chat persistence state
         window.activeChatInputText = "";
         window.isChatInputFocused = false;
 
-        let showProfileModal = false;
         let selectedIcon = localStorage.getItem("werewolf_playerIcon") || "👤"; 
         const availableIcons = ["👤", "⚔️", "🐺", "🧙‍♀️", "🔮", "👦", "👧", "🤡", "👻", "👽", "🤖", "🐱", "🐶", "💀"];
 
@@ -91,14 +94,12 @@
             render(); 
         };
 
-        window.openProfileEditor = () => {
-            showProfileModal = true;
-            const myData = roomData?.players[user?.uid];
-            if (myData && myData.icon) selectedIcon = myData.icon;
-            render();
-        };
+        window.openProfileEditor = () => { showProfileModal = true; render(); };
         window.closeProfileEditor = () => { showProfileModal = false; render(); };
         window.selectIcon = (icon) => { selectedIcon = icon; render(); };
+
+        window.openRoleGuide = () => { showRoleGuideModal = true; render(); };
+        window.closeRoleGuide = () => { showRoleGuideModal = false; render(); };
 
         window.handleImageUpload = (event) => {
             const file = event.target.files[0];
@@ -200,7 +201,7 @@
                 if ((elapsed >= 25 && isHost) || elapsed >= 27) window.endVoting();
                 else window.updateTimerDisplay();
             } else {
-                render();
+                render(); // refresh UI periodically if needed, though onSnapshot handles major changes
             }
         }
 
@@ -489,7 +490,7 @@
             const newPlayers = JSON.parse(JSON.stringify(roomData.players));
             let deaths = [];
 
-            // 🐺 Resolve Wolf Team Votes (Tally votes & Pick max; Randomize if tie)
+            // 🐺 Resolve Wolf Team Votes
             const aliveWolfIds = Object.keys(newPlayers).filter(id => (newPlayers[id].role === '狼人' || newPlayers[id].role === '惡靈騎士') && newPlayers[id].isAlive);
             const wolfTally = {};
             aliveWolfIds.forEach(wId => {
@@ -678,6 +679,95 @@
                 `;
             }
 
+            let roleGuideModalUI = '';
+            if (showRoleGuideModal) {
+                roleGuideModalUI = `
+                    <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+                        <div class="bg-slate-800 p-6 rounded-xl border border-slate-600 shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+                            <div class="flex justify-between items-center mb-6 border-b border-slate-700 pb-3">
+                                <h3 class="text-2xl font-bold text-indigo-400">📖 角色圖鑑</h3>
+                                <button onclick="window.closeRoleGuide()" class="text-slate-400 hover:text-white text-3xl leading-none">&times;</button>
+                            </div>
+                            
+                            <div class="space-y-6 text-left">
+                                <!-- 狼人陣營 -->
+                                <div>
+                                    <h4 class="text-lg font-bold text-red-400 border-b-2 border-red-900/50 pb-1 mb-3">🐺 壞人陣營 (狼人陣營)</h4>
+                                    
+                                    <div class="mb-4 bg-slate-900/50 p-3 rounded-lg border border-red-900/30">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-xl">🐺</span>
+                                            <span class="font-bold text-red-300">狼人</span>
+                                        </div>
+                                        <p class="text-sm text-slate-300 leading-relaxed">每晚可以與其他狼人（包含惡靈騎士）在專屬頻道溝通，並選擇一名玩家襲擊。若票數相同，系統將隨機選擇目標。</p>
+                                    </div>
+                                    
+                                    <div class="bg-slate-900/50 p-3 rounded-lg border border-red-900/30">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-xl">💀</span>
+                                            <span class="font-bold text-red-300">惡靈騎士</span>
+                                        </div>
+                                        <p class="text-sm text-slate-300 leading-relaxed mb-2">無法被女巫毒殺。若夜晚被查驗或被下毒，會啟動特殊技能面板，一局遊戲限選一次：</p>
+                                        <ul class="text-xs text-slate-400 list-disc pl-5 space-y-1">
+                                            <li><strong class="text-purple-400">反彈毒藥：</strong>若被女巫下毒，可以選擇將毒藥反彈給女巫（女巫死亡，自己存活）。</li>
+                                            <li><strong class="text-indigo-400">偽裝好人：</strong>若被預言家查驗，可以選擇偽裝，預言家將收到「好人」的結果。</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <!-- 好人陣營 (神職) -->
+                                <div>
+                                    <h4 class="text-lg font-bold text-blue-400 border-b-2 border-blue-900/50 pb-1 mb-3">🛡️ 好人陣營 (神職)</h4>
+                                    
+                                    <div class="mb-4 bg-slate-900/50 p-3 rounded-lg border border-blue-900/30">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-xl">🔮</span>
+                                            <span class="font-bold text-indigo-300">預言家</span>
+                                        </div>
+                                        <p class="text-sm text-slate-300 leading-relaxed">每晚可以查驗一名玩家的陣營。系統會回報該玩家是「好人」還是「壞人」。</p>
+                                    </div>
+
+                                    <div class="mb-4 bg-slate-900/50 p-3 rounded-lg border border-blue-900/30">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-xl">🧪</span>
+                                            <span class="font-bold text-purple-300">女巫</span>
+                                        </div>
+                                        <p class="text-sm text-slate-300 leading-relaxed">擁有一瓶解藥和一瓶毒藥。每局各限用一次，且不可在同一晚使用。夜晚可以看見被襲擊的對象，選擇使用解藥救活，或使用毒藥毒殺任意玩家。</p>
+                                    </div>
+
+                                    <div class="bg-slate-900/50 p-3 rounded-lg border border-blue-900/30">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-xl">⚔️</span>
+                                            <span class="font-bold text-amber-300">騎士</span>
+                                        </div>
+                                        <p class="text-sm text-slate-300 leading-relaxed">可以在白天的任意階段（發言、討論、投票）向任意玩家發起決鬥。一局限用一次。</p>
+                                        <ul class="text-xs text-slate-400 list-disc pl-5 mt-1 space-y-1">
+                                            <li>若目標是壞人，目標當場死亡，遊戲進入下個階段。</li>
+                                            <li>若目標是好人，騎士以死謝罪身亡。</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <!-- 好人陣營 (平民) -->
+                                <div>
+                                    <h4 class="text-lg font-bold text-green-400 border-b-2 border-green-900/50 pb-1 mb-3">🧑‍🌾 好人陣營 (平民)</h4>
+                                    
+                                    <div class="bg-slate-900/50 p-3 rounded-lg border border-green-900/30">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-xl">🧑‍🌾</span>
+                                            <span class="font-bold text-green-300">平民</span>
+                                        </div>
+                                        <p class="text-sm text-slate-300 leading-relaxed">沒有任何特殊技能。在白天聽取發言，推理出壞人並利用投票權將其放逐。</p>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <button onclick="window.closeRoleGuide()" class="w-full mt-6 bg-slate-600 hover:bg-slate-500 transition p-3 rounded-lg font-bold shadow-md">關閉圖鑑</button>
+                        </div>
+                    </div>
+                `;
+            }
+
             if (!user) {
                 appDiv.innerHTML = `
                     <div class="flex flex-col items-center justify-center min-h-[85vh]">
@@ -812,7 +902,6 @@
 
             const currentSpeakerId = roomData.phase === 'day_speech' ? roomData.speechOrder?.[roomData.currentSpeakerIndex] : null;
 
-            // Bad team vote tally for rendering badge overlay
             const wolfVotes = roomData.nightActions?.wolfVotes || {};
 
             let playersHTML = allPlayers.map(([id, player]) => {
@@ -824,7 +913,6 @@
                 let displayIconHTML = player.isAlive ? (isSpeaking ? '<span class="text-4xl">🎤</span>' : getIconHTML(player.icon, "w-12 h-12 text-4xl")) : '<span class="text-4xl">💀</span>';
                 let voteCount = (roomData.phase === 'vote' && roomData.dayVotes) ? Object.values(roomData.dayVotes).filter(v => v === id).length : 0;
                 
-                // Wolf votes visible ONLY to Bad Team during Night phase
                 let wolfVoteCount = (roomData.phase === 'night' && isWolfTeam) 
                     ? Object.values(wolfVotes).filter(v => v === id).length 
                     : 0;
@@ -881,7 +969,6 @@
                     ${roomData.speechOrder?.[roomData.currentSpeakerIndex] === user.uid ? `<button onclick="window.nextSpeaker()" class="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-6 py-2 rounded-lg shadow-lg animate-bounce">🎤 結束我的發言</button>` : `<p class="text-xs text-slate-400">請等待發言結束或玩家主動過單...</p>`}
                 </div>` : '';
 
-            // Calculate skip votes strictly from alive players
             const validSkipCount = Object.keys(roomData.daySkips || {}).filter(id => roomData.players[id]?.isAlive).length;
             const requiredSkipVotes = Math.floor(totalAlive * 0.75) + 1;
 
@@ -891,7 +978,6 @@
                     <button onclick="window.handleSkipDiscussion()" ${roomData.daySkips?.[user.uid] ? 'disabled' : ''} class="${roomData.daySkips?.[user.uid] ? 'bg-slate-600 text-slate-400' : 'bg-amber-600 hover:bg-amber-500 text-white'} text-sm font-bold px-4 py-2 rounded-lg">${roomData.daySkips?.[user.uid] ? '✓ 已要求跳過' : '⏩ 要求跳過討論'}</button>
                 </div>` : '';
 
-            // Calculate current leading wolf target for Witch preview
             let witchPreviewTargetId = null;
             if (roomData.nightActions?.wolfVotes) {
                 const aliveWolfIds = alivePlayers.filter(([id, p]) => p.role === '狼人' || p.role === '惡靈騎士').map(([id]) => id);
@@ -974,17 +1060,26 @@
 
             appDiv.innerHTML = `
                 ${profileModalUI}
+                ${roleGuideModalUI}
                 <div class="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700 mb-6 shadow-lg">
                     <div>
-                        <h2 class="text-xl font-bold flex items-center gap-2">代碼：<span class="text-indigo-400 tracking-widest">${roomId}</span><button onclick="window.copyCode()" class="text-slate-400 hover:text-white ml-2 text-sm">📋複製</button></h2>
-                        <div class="text-slate-300 text-sm mt-2 flex items-center gap-3">
+                        <h2 class="text-xl font-bold flex items-center gap-2">
+                            代碼：<span class="text-indigo-400 tracking-widest">${roomId}</span>
+                            <button onclick="window.copyCode()" class="text-slate-400 hover:text-white ml-2 text-sm">📋複製</button>
+                        </h2>
+                        <div class="text-slate-300 text-sm mt-2 flex items-center flex-wrap gap-2 md:gap-3">
                             <div class="w-8 h-8 rounded overflow-hidden flex justify-center items-center bg-slate-700">${getIconHTML(myData.icon, "w-full h-full text-xl")}</div> 
                             <span class="font-bold">${myData.name}</span>
                             <button onclick="window.openProfileEditor()" class="text-xs bg-slate-600 hover:bg-slate-500 px-2 py-1 rounded shadow transition">✏️ 編輯</button>
-                            <button onclick="window.leaveRoom()" class="text-xs text-red-400 underline ml-2 hover:text-red-300">離開房間</button>
+                            <button onclick="window.openRoleGuide()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-2 py-1 rounded shadow transition">📖 角色圖鑑</button>
+                            <button onclick="window.leaveRoom()" class="text-xs text-red-400 underline hover:text-red-300 ml-auto md:ml-2">離開房間</button>
                         </div>
                     </div>
-                    <div class="text-right"><span id="phaseTimerDisplay" class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span></div>
+                    <div class="text-right hidden sm:block"><span id="phaseTimerDisplay" class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span></div>
+                </div>
+                <!-- Mobile Timer Display -->
+                <div class="sm:hidden mb-4 text-center">
+                    <span id="phaseTimerDisplay" class="px-4 py-1.5 rounded-full text-sm font-bold block w-full ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span>
                 </div>
 
                 ${chatHtml}
