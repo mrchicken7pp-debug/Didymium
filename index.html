@@ -13,7 +13,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, deleteField } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
         // 💡 Increment this number every time you update the website code!
@@ -234,7 +234,7 @@
                 const roomRef = doc(db, "rooms", roomId);
                 localStorage.setItem("werewolf_playerName", playerName);
                 localStorage.setItem("werewolf_playerIcon", selectedIcon);
-                await updateDoc(roomRef, { [`players.${user.uid}`]: null });
+                await updateDoc(roomRef, { [`players.${user.uid}`]: deleteField() });
                 if (unsubscribeRoom) unsubscribeRoom();
                 roomId = null; roomData = null;
                 render();
@@ -251,7 +251,7 @@
 
             try {
                 const roomRef = doc(db, "rooms", roomId);
-                await updateDoc(roomRef, { [`players.${targetId}`]: null });
+                await updateDoc(roomRef, { [`players.${targetId}`]: deleteField() });
             } catch (err) {
                 alert("踢出失敗：" + err.message);
             }
