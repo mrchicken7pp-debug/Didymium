@@ -190,7 +190,7 @@
             try {
                 await setDoc(doc(db, "rooms", codeInput), { players: { [user.uid]: { name: playerName, icon: selectedIcon, isAlive: true, role: null } } }, { merge: true });
                 roomId = codeInput; listenToRoom(roomId);
-            } catch (err) { showError("無法加入房間"); }
+            } catch (err) { showError("無法加入房間，請檢查代碼或權限"); }
         };
 
         window.leaveRoom = async () => {
@@ -211,8 +211,15 @@
             if (unsubscribeRoom) unsubscribeRoom();
             unsubscribeRoom = onSnapshot(doc(db, "rooms", id), (docSnap) => {
                 isTransitioning = false;
-                if (docSnap.exists()) { roomData = docSnap.data(); render(); } 
+                if (docSnap.exists()) { 
+                    roomData = docSnap.data(); 
+                    console.log("Room Data Synced:", roomData.phase);
+                    render(); 
+                } 
                 else { showError("房間不存在"); roomId = null; roomData = null; render(); }
+            }, (error) => {
+                console.error("Firestore Snapshot Error:", error);
+                showError("與伺服器連線中斷或權限不足");
             });
         }
 
@@ -277,7 +284,7 @@
                 });
             } catch (error) {
                 console.error("Start Game Error:", error);
-                alert("開始遊戲時發生錯誤：" + error.message);
+                alert("開始遊戲失敗，請檢查網路或資料庫權限：" + error.message);
             }
         };
 
