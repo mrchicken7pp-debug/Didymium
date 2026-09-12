@@ -38,7 +38,7 @@
         let roomData = null;
         let playerName = "";
         let error = "";
-        let isTransitioning = false; // 防止重複觸發階段切換
+        let isTransitioning = false;
 
         // 登入監聽
         onAuthStateChanged(auth, (currentUser) => {
@@ -50,7 +50,7 @@
             }
         });
 
-        // 核心計時器與狀態檢查邏輯 (含房主備援機制，防止卡在 0 秒)
+        // 核心計時器與狀態檢查邏輯
         function checkTimersAndRender() {
             if (!roomData || isTransitioning) return;
             const now = Date.now();
@@ -58,7 +58,6 @@
 
             if (roomData.phase === 'night') {
                 const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
-                // 房主 45 秒時觸發；若房主離線/切換 App，任何玩家在 47 秒時備援觸發
                 if ((elapsed >= 45 && isHost) || elapsed >= 47) {
                     window.endNight();
                 } else {
@@ -90,10 +89,8 @@
             }
         }
 
-        // 每秒檢查與渲染
         setInterval(checkTimersAndRender, 1000);
 
-        // 網頁可見度監聽（從背景切回時立刻喚醒檢查）
         document.addEventListener("visibilitychange", () => {
             if (document.visibilityState === 'visible') {
                 checkTimersAndRender();
@@ -108,7 +105,7 @@
             setTimeout(() => { error = ""; render(); }, 3000);
         }
 
-        // 創建房間
+        // 創建房間 (加入預設的 roleSettings)
         window.createRoom = async () => {
             const nameInput = document.getElementById('playerName').value;
             if (!nameInput.trim()) return showError("請輸入玩家名稱");
@@ -123,6 +120,7 @@
                 players: {
                     [user.uid]: { name: playerName, isAlive: true, role: null }
                 },
+                roleSettings: { wolf: 1, seer: 1, witch: 1, villager: 0 }, // 預設 3 人局配置
                 nightStartTime: 0,
                 speakerStartTime: 0,
                 speechOrder: [],
@@ -167,7 +165,7 @@
             if (unsubscribeRoom) unsubscribeRoom();
             const roomRef = doc(db, "rooms", id);
             unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
-                isTransitioning = false; // 收到新資料時解鎖 transition
+                isTransitioning = false;
                 if (docSnap.exists()) {
                     roomData = docSnap.data();
                     render();
@@ -180,27 +178,47 @@
             });
         }
 
-        // 開始遊戲
+        // 房主調整角色數量
+        window.updateRoleSetting = async (role, delta) => {
+            if (roomData.phase !== 'lobby' || roomData.hostId !== user.uid) return;
+            const currentSettings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
+            const newValue = Math.max(0, (currentSettings[role] || 0) + delta);
+            
+            await updateDoc(doc(db, "rooms", roomId), {
+                [`roleSettings.${role}`]: newValue
+            });
+        };
+
+        // 開始遊戲 (依據房主設定的角色分配)
         window.startGame = async () => {
             const playerIds = Object.keys(roomData.players);
-            if (playerIds.length < 3) return showError("至少需要 3 名玩家才能開始");
+            const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
+            
+            const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.villager || 0);
+            
+            if (totalRoles !== playerIds.length) {
+                return showError(`角色數量 (${totalRoles}) 與實際玩家人數 (${playerIds.length}) 不符！請調整角色配置。`);
+            }
 
-            const shuffled = [...playerIds].sort(() => 0.5 - Math.random());
+            // 建立身分池
+            let rolePool = [];
+            for (let i = 0; i < (settings.wolf || 0); i++) rolePool.push("狼人");
+            for (let i = 0; i < (settings.seer || 0); i++) rolePool.push("預言家");
+            for (let i = 0; i < (settings.witch || 0); i++) rolePool.push("女巫");
+            for (let i = 0; i < (settings.villager || 0); i++) rolePool.push("平民");
+
+            // 打亂身分並分配
+            rolePool.sort(() => 0.5 - Math.random());
             const newPlayers = { ...roomData.players };
             
-            shuffled.forEach((id, index) => {
-                if (index === 0) {
-                    newPlayers[id].role = "狼人";
-                } else if (index === 1) {
-                    newPlayers[id].role = "預言家";
-                } else if (index === 2) {
-                    newPlayers[id].role = "女巫";
+            playerIds.forEach((id, index) => {
+                const assignedRole = rolePool[index];
+                newPlayers[id].role = assignedRole;
+                newPlayers[id].isAlive = true;
+                if (assignedRole === "女巫") {
                     newPlayers[id].hasHeal = true;
                     newPlayers[id].hasPoison = true;
-                } else {
-                    newPlayers[id].role = "平民";
                 }
-                newPlayers[id].isAlive = true;
             });
 
             await updateDoc(doc(db, "rooms", roomId), {
@@ -219,7 +237,7 @@
             await updateDoc(doc(db, "rooms", roomId), { "nightActions.wolfTarget": targetId });
         };
 
-        // 預言家行動 (每輪限制只能查驗 1 次)
+        // 預言家行動
         window.handleSeerAction = async (targetId) => {
             if (roomData.nightActions?.seerTarget) {
                 alert("你今晚已經查驗過玩家了！");
@@ -240,7 +258,7 @@
             await updateDoc(doc(db, "rooms", roomId), { "nightActions.witchPoisonTarget": targetId });
         };
 
-        // 切換下一位個人發言者
+        // 切換發言
         window.nextSpeaker = async () => {
             if (roomData.phase !== 'day_speech' || isTransitioning) return;
             isTransitioning = true;
@@ -266,7 +284,7 @@
             }
         };
 
-        // 跳過自由討論行動
+        // 跳過討論
         window.handleSkipDiscussion = async () => {
             if (roomData.phase !== 'day_free' || !roomData.players[user.uid]?.isAlive) return;
 
@@ -285,7 +303,7 @@
             }
         };
 
-        // 進入 25 秒投票階段
+        // 開始投票
         window.startVoting = async () => {
             if (roomData.phase === 'vote' || isTransitioning) return;
             isTransitioning = true;
@@ -299,7 +317,7 @@
             });
         };
 
-        // 玩家投票行動
+        // 投票
         window.handleVote = async (targetId) => {
             if (roomData.phase !== 'vote' || !roomData.players[user.uid]?.isAlive) return;
             const roomRef = doc(db, "rooms", roomId);
@@ -497,6 +515,39 @@
 
             if(roomData.phase === 'game_over') phaseText = '🏆 遊戲結束';
 
+            // 🟢 加入大廳角色配置 UI 🟢
+            let roleSetupUI = '';
+            if (roomData.phase === 'lobby') {
+                const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
+                const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.villager || 0);
+                const playerCnt = allPlayers.length;
+                const countColor = totalRoles === playerCnt ? 'text-green-400' : 'text-red-400';
+
+                roleSetupUI = `
+                    <div class="bg-slate-700/80 p-5 rounded-xl mt-4 mb-2 border border-slate-600 text-left">
+                        <h3 class="text-lg font-bold text-amber-400 mb-3 flex justify-between items-center">
+                            <span>⚙️ 遊戲角色配置</span>
+                            <span class="text-sm text-slate-300">角色總數: <span class="${countColor} font-bold text-lg">${totalRoles}</span> / 玩家人數: <span class="font-bold text-lg">${playerCnt}</span></span>
+                        </h3>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            ${['wolf', 'seer', 'witch', 'villager'].map(role => {
+                                const labels = { wolf: '🐺 狼人', seer: '🔮 預言家', witch: '🧪 女巫', villager: '🧑‍🌾 平民' };
+                                return `<div class="flex justify-between items-center bg-slate-800 p-3 rounded-lg border border-slate-700">
+                                    <span class="font-bold">${labels[role]}</span>
+                                    <div class="flex items-center gap-3">
+                                        ${isHost ? `<button onclick="window.updateRoleSetting('${role}', -1)" class="bg-slate-600 hover:bg-slate-500 text-white w-8 h-8 rounded shadow flex items-center justify-center font-bold transition">-</button>` : ''}
+                                        <span class="w-6 text-center font-bold text-lg text-indigo-300">${settings[role] || 0}</span>
+                                        ${isHost ? `<button onclick="window.updateRoleSetting('${role}', 1)" class="bg-slate-600 hover:bg-slate-500 text-white w-8 h-8 rounded shadow flex items-center justify-center font-bold transition">+</button>` : ''}
+                                    </div>
+                                </div>`;
+                            }).join('')}
+                        </div>
+                        ${isHost && totalRoles !== playerCnt ? `<p class="text-red-400 text-sm mt-3 text-center bg-red-900/30 p-2 rounded">⚠️ 角色數量與玩家人數不符，請調整至一致才能開始遊戲。</p>` : ''}
+                        ${!isHost ? `<p class="text-slate-400 text-sm mt-3 text-center">正在等待房主設定身分與開始遊戲...</p>` : ''}
+                    </div>
+                `;
+            }
+
             const currentSpeakerId = roomData.phase === 'day_speech' ? roomData.speechOrder?.[roomData.currentSpeakerIndex] : null;
 
             let playersHTML = allPlayers.map(([id, player]) => {
@@ -522,7 +573,6 @@
                             actionBtn = `<button onclick="window.handleWolfAction('${id}')" class="text-xs ${isSelected ? 'bg-green-600' : 'bg-red-600 hover:bg-red-500'} px-3 py-1 rounded-full mt-2 w-full">${isSelected ? '✓ 已鎖定' : '襲擊'}</button>`;
                         }
                         
-                        // 預言家行動控制 (已查驗過後禁止再按)
                         if (elapsed >= 15 && elapsed < 30 && myData.role === '預言家' && id !== user.uid) {
                             let isSelected = roomData.nightActions?.seerTarget === id;
                             let hasChecked = !!roomData.nightActions?.seerTarget;
@@ -627,7 +677,14 @@
 
             let hostControls = '';
             if(isHost) {
-                if (roomData.phase === 'lobby') hostControls = `<button onclick="window.startGame()" class="bg-indigo-600 hover:bg-indigo-500 px-6 py-2 rounded-lg font-bold">▶ 開始遊戲</button>`;
+                if (roomData.phase === 'lobby') {
+                    // 若大廳中的人數跟配置的總角色數不同，禁用開始按鈕
+                    const settings = roomData.roleSettings || { wolf: 1, seer: 1, witch: 1, villager: 0 };
+                    const totalRoles = (settings.wolf || 0) + (settings.seer || 0) + (settings.witch || 0) + (settings.villager || 0);
+                    const isReady = totalRoles === allPlayers.length;
+                    
+                    hostControls = `<button onclick="window.startGame()" class="${isReady ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-600 cursor-not-allowed opacity-50'} px-6 py-2 rounded-lg font-bold">▶ 開始遊戲</button>`;
+                }
                 if (roomData.phase === 'night') hostControls = `<button onclick="window.endNight()" class="bg-orange-600 hover:bg-orange-500 px-6 py-2 rounded-lg font-bold">☀ 天亮了 (跳過夜晚)</button>`;
                 if (roomData.phase === 'day_speech') hostControls = `<button onclick="window.nextSpeaker()" class="bg-amber-600 hover:bg-amber-500 px-6 py-2 rounded-lg font-bold">⏩ 強制下一位發言</button>`;
                 if (roomData.phase === 'day_free') hostControls = `<button onclick="window.startVoting()" class="bg-amber-600 hover:bg-amber-500 px-6 py-2 rounded-lg font-bold">🗳️ 提前結束討論進入投票</button>`;
@@ -637,7 +694,7 @@
 
             let roleUI = '';
             if (roomData.phase !== 'lobby') {
-                let roleColor = myData.role === '狼人' ? 'text-red-400' : (myData.role === '女巫' ? 'text-purple-400' : 'text-blue-400');
+                let roleColor = myData.role === '狼人' ? 'text-red-400' : (myData.role === '女巫' ? 'text-purple-400' : (myData.role === '預言家' ? 'text-indigo-400' : 'text-blue-400'));
                 let aliveText = !myData.isAlive ? ' (已死亡)' : '';
                 roleUI = `<div class="mt-4 p-4 bg-slate-700 inline-block rounded-lg border border-slate-600">
                     <p class="text-sm text-slate-400 mb-1">你的身分</p>
@@ -661,6 +718,7 @@
 
                 <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 mb-6 text-center shadow-lg">
                     <p class="text-lg md:text-xl text-slate-300 whitespace-pre-line">${roomData.systemMessage}</p>
+                    ${roleSetupUI}
                     ${roleUI}
                     ${witchSpecialPanel}
                     ${speechControlPanel}
