@@ -40,6 +40,10 @@
         let isTransitioning = false;
         let isAuthChecking = true;
         let activeChatTab = 'global'; // 'global' or 'wolf'
+        
+        // Chat persistence state
+        window.activeChatInputText = "";
+        window.isChatInputFocused = false;
 
         let showProfileModal = false;
         let selectedIcon = localStorage.getItem("werewolf_playerIcon") || "👤"; 
@@ -131,6 +135,31 @@
             return `<span class="${extraClasses} flex items-center justify-center">${iconData}</span>`;
         }
 
+        window.updateTimerDisplay = () => {
+            const timerDisplay = document.getElementById('phaseTimerDisplay');
+            if (!timerDisplay || !roomData) return;
+            const now = Date.now();
+            let phaseText = '';
+            
+            if(roomData.phase === 'lobby') phaseText = '等待中';
+            if(roomData.phase === 'night') {
+                const elapsed = Math.max(0, Math.floor((now - roomData.nightStartTime) / 1000));
+                if (elapsed < 15) phaseText = `🌙 狼人 (${Math.max(0, 15 - elapsed)}s)`;
+                else if (elapsed < 30) phaseText = `🔮 預言家 (${Math.max(0, 30 - elapsed)}s)`;
+                else if (elapsed < 45) phaseText = `🧪 女巫 (${Math.max(0, 45 - elapsed)}s)`;
+                else phaseText = `💀 惡靈騎士 (${Math.max(0, 60 - elapsed)}s)`;
+            }
+            if(roomData.phase === 'day_speech') {
+                const elapsed = Math.max(0, Math.floor((now - roomData.speakerStartTime) / 1000));
+                phaseText = `🎤 發言中 (${Math.max(0, 25 - elapsed)}s)`;
+            }
+            if(roomData.phase === 'day_free') phaseText = `☀️ 自由討論 (${Math.max(0, 60 - Math.floor((now - roomData.dayStartTime) / 1000))}s)`;
+            if(roomData.phase === 'vote') phaseText = `🗳️ 投票階段 (${Math.max(0, 25 - Math.floor((now - roomData.voteStartTime) / 1000))}s)`;
+            if(roomData.phase === 'game_over') phaseText = '🏆 遊戲結束';
+            
+            timerDisplay.innerText = phaseText;
+        };
+
         function checkTimersAndRender() {
             if (!roomData || isTransitioning || roomData.phase === 'lobby') return;
             const now = Date.now();
@@ -139,19 +168,19 @@
             if (roomData.phase === 'night') {
                 const elapsed = Math.floor((now - roomData.nightStartTime) / 1000);
                 if ((elapsed >= 60 && isHost) || elapsed >= 62) window.endNight();
-                else render();
+                else window.updateTimerDisplay();
             } else if (roomData.phase === 'day_speech') {
                 const elapsed = Math.floor((now - roomData.speakerStartTime) / 1000);
                 if ((elapsed >= 25 && isHost) || elapsed >= 27) window.nextSpeaker();
-                else render();
+                else window.updateTimerDisplay();
             } else if (roomData.phase === 'day_free') {
                 const elapsed = Math.floor((now - roomData.dayStartTime) / 1000);
                 if ((elapsed >= 60 && isHost) || elapsed >= 62) window.startVoting();
-                else render();
+                else window.updateTimerDisplay();
             } else if (roomData.phase === 'vote') {
                 const elapsed = Math.floor((now - roomData.voteStartTime) / 1000);
                 if ((elapsed >= 25 && isHost) || elapsed >= 27) window.endVoting();
-                else render();
+                else window.updateTimerDisplay();
             } else {
                 render();
             }
@@ -491,6 +520,8 @@
             };
             
             try {
+                // Clear input tracking before sending to prevent old text restoring
+                window.activeChatInputText = ''; 
                 input.value = '';
                 await updateDoc(doc(db, "rooms", roomId), {
                     [chatKey]: arrayUnion(msgObj)
@@ -610,6 +641,7 @@
 
             const chatMessages = activeChatTab === 'global' ? (roomData.globalChat || []) : (roomData.wolfChat || []);
             
+            // Add oninput, onfocus, and onblur to specifically track state across ALL renders universally
             const chatHtml = `
             <div class="bg-slate-800 rounded-xl border border-slate-700 mb-6 shadow-lg flex flex-col h-64">
                 <div class="flex border-b border-slate-700">
@@ -626,7 +658,13 @@
                     `).join('')}
                 </div>
                 <div class="p-2 border-t border-slate-700 flex gap-2">
-                    <input id="chatInput" type="text" class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-1 text-sm outline-none focus:ring-1 focus:ring-indigo-500 text-white" placeholder="${activeChatTab === 'global' ? '向所有人發送...' : '向狼人陣營發送...'}" onkeydown="if(event.key === 'Enter') window.sendChatMessage()">
+                    <input id="chatInput" type="text" value="${window.activeChatInputText}" 
+                           oninput="window.activeChatInputText = this.value" 
+                           onfocus="window.isChatInputFocused = true" 
+                           onblur="window.isChatInputFocused = false"
+                           class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-1 text-sm outline-none focus:ring-1 focus:ring-indigo-500 text-white" 
+                           placeholder="${activeChatTab === 'global' ? '向所有人發送...' : '向狼人陣營發送...'}" 
+                           onkeydown="if(event.key === 'Enter') window.sendChatMessage()">
                     <button onclick="window.sendChatMessage()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-1 rounded-lg text-sm font-bold transition">傳送</button>
                 </div>
             </div>
@@ -788,7 +826,6 @@
 
             appDiv.innerHTML = `
                 ${profileModalUI}
-                <!-- HEADER (Where IMG_0171.jpeg references) -->
                 <div class="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700 mb-6 shadow-lg">
                     <div>
                         <h2 class="text-xl font-bold flex items-center gap-2">代碼：<span class="text-indigo-400 tracking-widest">${roomId}</span><button onclick="window.copyCode()" class="text-slate-400 hover:text-white ml-2 text-sm">📋複製</button></h2>
@@ -799,10 +836,10 @@
                             <button onclick="window.logout()" class="text-xs text-red-400 underline ml-2 hover:text-red-300">離開並登出</button>
                         </div>
                     </div>
-                    <div class="text-right"><span class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span></div>
+                    <div class="text-right"><span id="phaseTimerDisplay" class="px-4 py-1.5 rounded-full text-sm font-bold ${roomData.phase === 'night' ? 'bg-indigo-900 text-indigo-200' : (roomData.phase === 'vote' ? 'bg-amber-900 text-amber-200' : 'bg-slate-600')}">${phaseText}</span></div>
                 </div>
 
-                <!-- NEW CHAT SECTION ADDED HERE -->
+                <!-- CHAT SECTION -->
                 ${chatHtml}
 
                 <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 mb-6 text-center shadow-lg">
@@ -824,10 +861,17 @@
                 ${isHost ? `<div class="bg-slate-800 p-4 rounded-xl border border-indigo-500/30 flex justify-center items-center gap-4 flex-wrap"><span class="text-lg hidden md:block">👑 房主控制：</span>${hostControls}</div>` : ''}
             `;
 
-            // Auto-scroll chat box to bottom
+            // Auto-scroll chat box and restore keyboard focus
             setTimeout(() => {
                 const chatBox = document.getElementById('chatBox');
                 if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
+                
+                const newChatInput = document.getElementById('chatInput');
+                if (newChatInput && window.isChatInputFocused) {
+                    newChatInput.focus();
+                    const len = newChatInput.value.length;
+                    newChatInput.setSelectionRange(len, len); // Move cursor to the end
+                }
             }, 10);
         }
     </script>
