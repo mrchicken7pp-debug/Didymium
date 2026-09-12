@@ -16,6 +16,9 @@
         import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
+        // 💡 Increment this number every time you update the website code!
+        const CURRENT_VERSION = 2; 
+
         const firebaseConfig = {
             apiKey: "AIzaSyB9sxYCA7_ayevgpY9BtWrK7nHJIR7bkv8",
             authDomain: "diddy-test.firebaseapp.com",
@@ -200,6 +203,7 @@
             localStorage.setItem("werewolf_playerIcon", selectedIcon);
             const newRoomId = generateRoomCode();
             await setDoc(doc(db, "rooms", newRoomId), {
+                version: CURRENT_VERSION,
                 hostId: user.uid, phase: "lobby",
                 players: { [user.uid]: { name: playerName, icon: selectedIcon, isAlive: true, role: null } },
                 roleSettings: { wolf: 1, seer: 1, witch: 1, knight: 0, ghostRider: 0, villager: 0 },
@@ -261,7 +265,6 @@
                 if (docSnap.exists()) { 
                     roomData = docSnap.data(); 
                     
-                    // Check if current user was kicked
                     if (user && roomData.players && !roomData.players[user.uid]) {
                         alert("你已被房主踢出房間。");
                         if (unsubscribeRoom) unsubscribeRoom();
@@ -559,6 +562,26 @@
             const appDiv = document.getElementById('app');
             if (isAuthChecking) return;
 
+            // 🚨 Check if the room has a newer code version than current client
+            if (roomData && roomData.version && roomData.version > CURRENT_VERSION) {
+                appDiv.innerHTML = `
+                    <div class="fixed inset-0 bg-slate-900/95 flex items-center justify-center z-50 p-4">
+                        <div class="bg-slate-800 p-8 rounded-2xl border border-amber-500 shadow-2xl max-w-md text-center">
+                            <div class="text-5xl mb-4 animate-bounce">🔄</div>
+                            <h3 class="text-2xl font-bold text-amber-400 mb-3">網站已推出新版本！</h3>
+                            <p class="text-slate-300 mb-6 leading-relaxed">
+                                房間的程式版本與您目前的版本不相符。<br>
+                                請點擊下方按鈕重新整理網頁以載入最新功能。
+                            </p>
+                            <button onclick="window.location.reload()" class="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3.5 px-6 rounded-xl shadow-lg transition text-lg flex items-center justify-center gap-2">
+                                🔄 立即重新整理網頁
+                            </button>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
             let profileModalUI = '';
             if (showProfileModal) {
                 profileModalUI = `
@@ -731,7 +754,6 @@
                 let voteCount = (roomData.phase === 'vote' && roomData.dayVotes) ? Object.values(roomData.dayVotes).filter(v => v === id).length : 0;
                 let actionBtn = '';
                 
-                // Owner Kick Button (Only in lobby, not on yourself)
                 let kickBtn = '';
                 if (isHost && roomData.phase === 'lobby' && id !== user.uid) {
                     kickBtn = `<button onclick="window.kickPlayer('${id}')" class="absolute top-2 left-2 bg-red-600/90 hover:bg-red-500 text-white text-xs font-bold px-2 py-1 rounded shadow-md z-10">踢出</button>`;
